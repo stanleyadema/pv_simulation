@@ -16,7 +16,7 @@ from ghi_fetcher_local import get_hourly_ghi_local
 
 
 # ---------- Page & constants ----------
-st.set_page_config(page_title="Simulation", layout="wide")
+st.set_page_config(page_title="Simulation", layout="wide", page_icon="☀️")
 
 BASE_HEIGHT   = 150
 ENERGY_HEIGHT = BASE_HEIGHT * 2         # Source/Enjoy is 2x
