@@ -1398,7 +1398,6 @@ def render_pv_overview(sim_all: pd.DataFrame, ts_col: str, weeks: List[tuple[int
     st.markdown(
         OVERVIEW_CSS + """
 <style>
-.block-container { padding-top: 32px !important; }
 .pv-row > div[data-testid="column"] > div[data-testid="stVerticalBlock"] {
     padding-bottom: 0 !important;
     margin-bottom: 0 !important;
