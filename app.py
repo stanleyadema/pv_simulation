@@ -36,6 +36,13 @@ COLOR_BATT   = "#1f77b4"
 COLOR_DIESEL = "#000000"
 COLOR_LOAD   = "#d62728"
 COLOR_SPILL  = "#7cd992"
+COLOR_CHART_BLACK = "#000000"
+OVERVIEW_WEEK_HEIGHT = 220
+OVERVIEW_WEEK_HEIGHT_OTHER = 120
+
+def _render_week_row(layout_ratio=None):
+    ratio = layout_ratio or [0.8, 4, 1]
+    return st.columns(ratio, gap="small")
 NASA_SOURCE  = "NASA GHI"
 IRRADIANCE_COL = "irradiance_wm2"
 GENERATOR_PALETTE = [
@@ -84,15 +91,60 @@ SAMPLE_DL_CSS = """
 
 OVERVIEW_CSS = """
 <style>
+.pv-overview-week-wrap {
+    width: 70px;
+    display: flex;
+    justify-content: flex-end;
+    padding-right: 8px;
+}
+.pv-overview-week-wrap.chart {
+    height: 220px;
+    align-items: center;
+}
+.pv-overview-week-wrap.chart-small {
+    height: 120px;
+    align-items: center;
+}
+.pv-overview-week-wrap.avg {
+    min-height: 80px;
+    align-items: center;
+}
 .pv-overview-week-label {
     font-size: 20px;
     font-weight: 700;
     text-align: right;
-    margin-bottom: 6px;
-    height: 170px;
+    margin: 0;
+}
+.pv-overview-week-label-block {
     display: flex;
-    align-items: center;
-    justify-content: flex-end;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+}
+.pv-overview-week-avg {
+    font-size: 16px;
+    font-weight: 600;
+    color: #1b8e3e;
+}
+.pv-overview-week-avg.muted {
+    color: #999;
+}
+.pv-overview-day-strip {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    font-weight: 600;
+    color: #777;
+    margin-bottom: 4px;
+    text-align: center;
+}
+.pv-overview-day-values {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    margin-top: 4px;
+}
+.pv-overview-day-value {
+    text-align: left;
+    padding-left: 4px;
 }
 .pv-overview-day-header {
     text-align: center;
@@ -122,17 +174,43 @@ OVERVIEW_CSS = """
     line-height: 1.25;
 }
 .pv-overview-week-summary.week {
-    height: 170px;
+    height: 220px;
     display: flex;
     flex-direction: column;
     justify-content: center;
+}
+.pv-overview-week-summary .pv-spill-line {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    min-height: 0;
+    margin-bottom: 4px;
+}
+.pv-overview-week-summary.week-small {
+    height: 120px;
 }
 .pv-overview-week-summary .pv-green {
     color: #1b8e3e;
     font-weight: 700;
 }
+.pv-overview-week-summary .pv-yellow {
+    color: #f6c343;
+    font-weight: 700;
+}
 .pv-overview-week-summary .pv-red {
     color: #b71c1c;
+    font-weight: 700;
+}
+.pv-green {
+    color: #1b8e3e;
+    font-weight: 700;
+}
+.pv-red {
+    color: #b71c1c;
+    font-weight: 700;
+}
+.week-total-text {
+    font-size: 20px;
     font-weight: 700;
 }
 .pv-overview-week-summary small {
@@ -148,6 +226,11 @@ OVERVIEW_CSS = """
     font-weight: 700;
     text-align: right;
     font-size: 18px;
+    height: 220px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding-right: 8px;
 }
 .pv-overview-avg-pct {
     font-size: 12px;
@@ -474,7 +557,9 @@ def unified_energy_figure(sim_w: pd.DataFrame, ts_col: str, ymax: float,
                           hover_style: str = "auto",  # retained for backward compatibility
                           day_hr_map: Optional[dict[pd.Timestamp, float]] = None,
                           hr_values: Optional[np.ndarray] = None,
-                          extra_hr: Optional[np.ndarray] = None) -> go.Figure:
+                          extra_hr: Optional[np.ndarray] = None,
+                          show_night: bool = False,
+                          include_time: bool = True) -> go.Figure:
     fig = go.Figure()
     n = len(sim_w)
     x = np.arange(n)
@@ -499,14 +584,23 @@ def unified_energy_figure(sim_w: pd.DataFrame, ts_col: str, ymax: float,
         hr_display = np.array([f"{val:.1f}" for val in np.round(extra_hr, 1)])
 
     def build_custom(values):
-        cols = [values, time_str, date_str]
+        cols = [values]
+        if include_time:
+            cols.extend([time_str, date_str])
+        else:
+            cols.append(date_str)
         if hr_display is not None:
             cols.append(hr_display)
         return np.stack(cols, axis=1)
 
-    hover_template = "%{customdata[0]} kWh, %{customdata[1]}, %{customdata[2]}"
+    if include_time:
+        hover_template = "%{customdata[0]} kWh, %{customdata[1]}, %{customdata[2]}"
+        hr_idx = 3
+    else:
+        hover_template = "%{customdata[0]} kWh, %{customdata[1]}"
+        hr_idx = 2
     if hr_display is not None:
-        hover_template += ", %{customdata[3]} HR"
+        hover_template += f", %{{customdata[{hr_idx}]}} HR"
     hover_template += "<extra></extra>"
 
     fig.add_bar(x=x, y=pv_vals,   width=BAR_WIDTH, marker_color=COLOR_PV,     showlegend=False,
@@ -526,7 +620,8 @@ def unified_energy_figure(sim_w: pd.DataFrame, ts_col: str, ymax: float,
     if show_day_lines and day_starts is not None:
         for i, start_idx in enumerate(day_starts):
             if i > 0:
-                fig.add_vline(x=start_idx, line_width=1, line_dash="dash", line_color="lightgray")
+                pos = start_idx - 0.5
+                fig.add_vline(x=pos, line_width=1, line_dash="dash", line_color="lightgray")
 
     if show_day_labels and day_starts is not None and day_labels is not None:
         for i, start_idx in enumerate(day_starts):
@@ -561,6 +656,21 @@ def unified_energy_figure(sim_w: pd.DataFrame, ts_col: str, ymax: float,
                 yref="y",
             )
 
+    if show_night:
+        for start_idx, end_idx in _night_segments(ts):
+            x0 = start_idx - 0.5
+            x1 = end_idx + 0.5
+            fig.add_vrect(
+                x0=x0,
+                x1=x1,
+                fillcolor="rgba(0,0,0,0.25)",
+                opacity=0.35,
+                line_width=0,
+                layer="below",
+                yref="y",
+                y0=-ymax,
+                y1=ymax,
+            )
 
     fig.update_layout(
         barmode="relative",
@@ -592,6 +702,8 @@ def _week_dataframe(sim_all: pd.DataFrame, ts_col: str, year_sel: int, week_sel:
             week_full[col] = week_df[col].reindex(full_index).fillna(0.0)
         else:
             week_full[col] = 0.0
+    if IRRADIANCE_COL in week_df.columns:
+        week_full[IRRADIANCE_COL] = week_df[IRRADIANCE_COL].reindex(full_index).fillna(0.0)
     if "soc_pct" in week_df.columns:
         week_full["soc_pct"] = week_df["soc_pct"].reindex(full_index).ffill().fillna(0.0)
     else:
@@ -600,7 +712,7 @@ def _week_dataframe(sim_all: pd.DataFrame, ts_col: str, year_sel: int, week_sel:
     return week_full
 
 
-def _overview_day_chart(day_df: pd.DataFrame, ts_index: pd.DatetimeIndex, include_pv: bool, ymax: float) -> go.Figure:
+def _overview_day_chart_summary(day_df: pd.DataFrame, ts_index: pd.DatetimeIndex, include_pv: bool, ymax: float) -> go.Figure:
     fig = go.Figure()
     x = np.arange(len(day_df))
     load_vals = day_df["load_kWh"].to_numpy()
@@ -630,7 +742,7 @@ def _overview_day_chart(day_df: pd.DataFrame, ts_index: pd.DatetimeIndex, includ
         x=x,
         y=positive_base,
         width=0.9,
-        marker_color="#111111",
+        marker_color=COLOR_CHART_BLACK,
         showlegend=False,
         hovertemplate="%{customdata[0]} kWh, %{customdata[1]}, %{customdata[2]}<extra></extra>",
         customdata=tooltip_data(positive_base),
@@ -663,6 +775,16 @@ def _overview_ymax(week_df: pd.DataFrame, include_pv: bool) -> float:
     load_peak = float(week_df["load_kWh"].max()) if "load_kWh" in week_df else 0.0
     base = max(load_peak, 1.0)
     return np.ceil(base / 25.0) * 25.0
+
+
+def _overview_irradiance_ymax(df: pd.DataFrame) -> float:
+    if IRRADIANCE_COL not in df.columns:
+        return 100.0
+    vals = df[IRRADIANCE_COL].to_numpy(dtype=float)
+    peak = float(np.nanmax(vals)) if len(vals) else 100.0
+    if not np.isfinite(peak) or peak <= 0:
+        peak = 100.0
+    return np.ceil(peak / 100.0) * 100.0
 
 
 def soc_bar_figure(sim_w: pd.DataFrame, ts_col: str, soc_min: int, soc_max: int) -> go.Figure:
@@ -799,8 +921,373 @@ def detail_energy_figure(detail_df: pd.DataFrame, ts_col: str, g_cols: list[str]
     )
     fig.update_yaxes(range=[-ymax, ymax], showticklabels=False, zeroline=True,
                      zerolinecolor="lightgray", zerolinewidth=1)
-    fig.update_xaxes(showticklabels=False)
+    fig.update_xaxes(showticklabels=False, showgrid=True, gridwidth=1, gridcolor="rgba(0,0,0,0.15)", griddash="dash")
     return fig
+
+
+def _overview_day_chart_load(day_df: pd.DataFrame, ts_index: pd.DatetimeIndex, ymax: float) -> go.Figure:
+    fig = go.Figure()
+    loads = day_df["load_kWh"].to_numpy()
+    x = np.arange(len(day_df))
+    time_str = pd.Index(ts_index).strftime("%H:%M")
+    date_str = pd.Index(ts_index).strftime("%d %b")
+    custom = np.stack([np.rint(loads).astype(int), time_str, date_str], axis=1)
+    fig.add_bar(
+        x=x,
+        y=loads,
+        width=0.9,
+        marker_color=COLOR_CHART_BLACK,
+        showlegend=False,
+        customdata=custom,
+        hovertemplate="%{customdata[0]} kWh, %{customdata[1]}, %{customdata[2]}<extra></extra>",
+    )
+    fig.update_layout(
+        height=120,
+        margin=dict(l=2, r=2, t=2, b=2),
+        bargap=0.01,
+        showlegend=False,
+    )
+    fig.update_xaxes(visible=False, showgrid=True, gridwidth=1, gridcolor="rgba(0,0,0,0.15)", griddash="dash")
+    fig.update_yaxes(range=[0, ymax], visible=False)
+    return fig
+
+
+def _overview_day_chart_irradiance(day_df: pd.DataFrame, ts_index: pd.DatetimeIndex, ymax: float) -> go.Figure:
+    fig = go.Figure()
+    irr_vals = day_df.get(IRRADIANCE_COL, pd.Series(np.nan, index=day_df.index)).to_numpy(dtype=float)
+    x = np.arange(len(day_df))
+    time_str = pd.Index(ts_index).strftime("%H:%M")
+    date_str = pd.Index(ts_index).strftime("%d %b")
+    custom = np.stack([np.rint(np.nan_to_num(irr_vals, nan=0.0)).astype(int), time_str, date_str], axis=1)
+    mask = ~np.isnan(irr_vals)
+    if mask.any():
+        fig.add_scatter(
+            x=x,
+            y=np.where(mask, irr_vals, None),
+            mode="lines",
+            line=dict(color=COLOR_PV, width=2),
+            showlegend=False,
+            customdata=custom,
+            hovertemplate="%{customdata[0]} W/m², %{customdata[1]}, %{customdata[2]}<extra></extra>",
+        )
+    fig.update_layout(
+        height=120,
+        margin=dict(l=2, r=2, t=2, b=2),
+        showlegend=False,
+    )
+    fig.update_xaxes(visible=False, showgrid=True, gridwidth=1, gridcolor="rgba(0,0,0,0.2)", griddash="dash")
+    fig.update_yaxes(range=[0, ymax], visible=False)
+    return fig
+
+
+def _night_segments(ts: pd.Series) -> list[tuple[int, int]]:
+    ts = pd.to_datetime(ts).reset_index(drop=True)
+    hours = ts.dt.hour.to_numpy()
+    segments: list[tuple[int, int]] = []
+    start_idx: Optional[int] = None
+    for idx, hour in enumerate(hours):
+        is_night = (hour >= 18) or (hour < 5)
+        if is_night:
+            if start_idx is None:
+                start_idx = idx
+        else:
+            if start_idx is not None:
+                segments.append((start_idx, idx - 1))
+                start_idx = None
+    if start_idx is not None:
+        segments.append((start_idx, len(hours) - 1))
+    return segments
+
+
+def _overview_week_chart(week_df: pd.DataFrame, ts_col: str, data_mode: str,
+                         show_pv: bool, show_ess: bool = False, show_night: bool = False,
+                         irr_ymax: Optional[float] = None) -> go.Figure:
+    if data_mode == "Summary":
+        return _overview_week_chart_summary(week_df, ts_col, show_pv, show_ess, show_night)
+    if data_mode == "Load":
+        return _overview_week_chart_load(week_df, ts_col, show_night)
+    return _overview_week_chart_irradiance(week_df, ts_col, ymax=irr_ymax)
+
+
+def _overview_week_chart_load(week_df: pd.DataFrame, ts_col: str, show_night: bool = False) -> go.Figure:
+    fig = go.Figure()
+    ts = pd.to_datetime(week_df[ts_col]).reset_index(drop=True)
+    load_vals = week_df["load_kWh"].to_numpy()
+    time_str = ts.dt.strftime("%H:%M")
+    date_str = ts.dt.strftime("%d %b")
+    custom = np.stack([np.rint(load_vals).astype(int), time_str, date_str], axis=1)
+    fig.add_bar(
+        x=np.arange(len(load_vals)),
+        y=load_vals,
+        width=BAR_WIDTH,
+        marker_color=COLOR_CHART_BLACK,
+        customdata=custom,
+        hovertemplate="%{customdata[0]} kWh, %{customdata[1]}, %{customdata[2]}<extra></extra>",
+        showlegend=False,
+    )
+    ymax = float(np.nanmax(load_vals)) if load_vals.size else 0.0
+    ymax = max(ymax, 1.0)
+    day_starts, _ = _day_boundaries_and_labels(ts)
+    for idx in range(len(day_starts)):
+        if idx == 0:
+            continue
+        pos = day_starts[idx] - 0.5
+        fig.add_vline(x=pos, line_width=1, line_dash="dash", line_color="lightgray")
+    if show_night:
+        for start_idx, end_idx in _night_segments(ts):
+            x0 = start_idx - 0.5
+            x1 = end_idx + 0.5
+            fig.add_vrect(
+                x0=x0,
+                x1=x1,
+                fillcolor="rgba(0,0,0,0.25)",
+                opacity=0.35,
+                line_width=0,
+                layer="below",
+                yref="y",
+                y0=0,
+                y1=ymax,
+            )
+    fig.update_layout(
+        height=OVERVIEW_WEEK_HEIGHT_OTHER,
+        margin=dict(l=0, r=0, t=4, b=0),
+        bargap=BAR_GAP,
+        showlegend=False,
+    )
+    fig.update_xaxes(showticklabels=False)
+    fig.update_yaxes(range=[0, ymax], showticklabels=False)
+    return fig
+
+
+def _overview_week_chart_summary(week_df: pd.DataFrame, ts_col: str,
+                                 show_pv: bool, show_ess: bool, show_night: bool) -> go.Figure:
+    fig = go.Figure()
+    ts = pd.to_datetime(week_df[ts_col]).reset_index(drop=True)
+    load_vals = week_df["load_kWh"].to_numpy()
+    x = np.arange(len(week_df))
+    time_str = ts.dt.strftime("%H:%M")
+    date_str = ts.dt.strftime("%d %b")
+
+    def tooltip(values: np.ndarray) -> np.ndarray:
+        cleaned = np.rint(np.abs(values)).astype(int)
+        return np.stack([cleaned, time_str, date_str], axis=1)
+
+    remaining_load = load_vals.copy()
+    if show_pv:
+        pv_vals = np.minimum(week_df["harvest_used_kWh"].to_numpy(), remaining_load)
+        remaining_load = np.clip(remaining_load - pv_vals, 0.0, None)
+        fig.add_bar(
+            x=x,
+            y=pv_vals,
+            width=BAR_WIDTH,
+            marker_color=COLOR_PV,
+            showlegend=False,
+            customdata=tooltip(pv_vals),
+            hovertemplate="%{customdata[0]} kWh, %{customdata[1]}, %{customdata[2]}<extra></extra>",
+        )
+
+    if show_ess and "batt_discharge_kWh" in week_df:
+        ess_source = np.maximum(week_df["batt_discharge_kWh"].to_numpy(), 0.0)
+        ess_vals = np.minimum(ess_source, remaining_load)
+        remaining_load = np.clip(remaining_load - ess_vals, 0.0, None)
+        fig.add_bar(
+            x=x,
+            y=ess_vals,
+            width=BAR_WIDTH,
+            marker_color=COLOR_BATT,
+            showlegend=False,
+            customdata=tooltip(ess_vals),
+            hovertemplate="%{customdata[0]} kWh, %{customdata[1]}, %{customdata[2]}<extra></extra>",
+        )
+
+    positive_base = remaining_load
+    fig.add_bar(
+        x=x,
+        y=positive_base,
+        width=BAR_WIDTH,
+        marker_color=COLOR_CHART_BLACK,
+        showlegend=False,
+        customdata=tooltip(positive_base),
+        hovertemplate="%{customdata[0]} kWh, %{customdata[1]}, %{customdata[2]}<extra></extra>",
+    )
+    fig.add_bar(
+        x=x,
+        y=-load_vals,
+        width=BAR_WIDTH,
+        marker_color=COLOR_LOAD,
+        showlegend=False,
+        customdata=tooltip(load_vals),
+        hovertemplate="%{customdata[0]} kWh, %{customdata[1]}, %{customdata[2]}<extra></extra>",
+    )
+
+    ymax = _overview_ymax(week_df, show_pv)
+    day_starts, _ = _day_boundaries_and_labels(ts)
+    for idx in range(len(day_starts)):
+        if idx == 0:
+            continue
+        pos = day_starts[idx] - 0.5
+        fig.add_vline(x=pos, line_width=1, line_dash="dash", line_color="lightgray")
+
+    if show_night:
+        for start_idx, end_idx in _night_segments(ts):
+            x0 = start_idx - 0.5
+            x1 = end_idx + 0.5
+            fig.add_vrect(
+                x0=x0,
+                x1=x1,
+                fillcolor="rgba(0,0,0,0.25)",
+                opacity=0.35,
+                line_width=0,
+                layer="below",
+                yref="y",
+                y0=-ymax,
+                y1=ymax,
+            )
+
+    fig.update_layout(
+        barmode="relative",
+        height=OVERVIEW_WEEK_HEIGHT,
+        margin=dict(l=0, r=0, t=8, b=2),
+        bargap=BAR_GAP,
+        showlegend=False,
+    )
+    fig.update_xaxes(showticklabels=False)
+    fig.update_yaxes(range=[-ymax, ymax], showticklabels=False)
+    return fig
+
+
+def _overview_week_chart_irradiance(week_df: pd.DataFrame, ts_col: str,
+                                    ymax: Optional[float] = None) -> go.Figure:
+    fig = go.Figure()
+    if IRRADIANCE_COL not in week_df:
+        fig.update_layout(
+            height=OVERVIEW_WEEK_HEIGHT_OTHER,
+            margin=dict(l=0, r=0, t=4, b=0),
+        )
+        fig.update_xaxes(showticklabels=False)
+        fig.update_yaxes(showticklabels=False)
+        return fig
+    ts = pd.to_datetime(week_df[ts_col]).reset_index(drop=True)
+    irr_vals = week_df[IRRADIANCE_COL].to_numpy(dtype=float)
+    irr_vals = np.where(np.isfinite(irr_vals), irr_vals, np.nan)
+    x = np.arange(len(irr_vals))
+    time_str = ts.dt.strftime("%H:%M")
+    date_str = ts.dt.strftime("%d %b")
+    custom = np.stack([np.rint(np.nan_to_num(irr_vals, nan=0.0)).astype(int), time_str, date_str], axis=1)
+    bar_vals = np.where(np.isnan(irr_vals), None, irr_vals)
+    fig.add_bar(
+        x=x,
+        y=bar_vals,
+        width=BAR_WIDTH,
+        marker_color=COLOR_PV,
+        customdata=custom,
+        hovertemplate="%{customdata[0]} W/m², %{customdata[1]}, %{customdata[2]}<extra></extra>",
+        showlegend=False,
+    )
+    day_starts, _ = _day_boundaries_and_labels(ts)
+    for idx in range(len(day_starts)):
+        if idx == 0:
+            continue
+        fig.add_vline(x=day_starts[idx], line_width=1, line_dash="dash", line_color="rgba(0,0,0,0.25)")
+
+    chart_cap = ymax if (ymax is not None and ymax > 0) else float(np.nanmax(np.nan_to_num(irr_vals, nan=0.0)))
+    if chart_cap <= 0:
+        chart_cap = 1.0
+    if day_starts:
+        for i, start_idx in enumerate(day_starts):
+            end_idx = day_starts[i + 1] if i + 1 < len(day_starts) else len(irr_vals)
+            day_slice = irr_vals[start_idx:end_idx]
+            if day_slice.size == 0:
+                continue
+            day_total = np.nansum(day_slice) / 1000.0
+            if not np.isfinite(day_total) or day_total <= 0:
+                continue
+            mid_x = start_idx + max((end_idx - start_idx - 1), 0) / 2.0
+            fig.add_annotation(
+                x=mid_x,
+                y=chart_cap * 0.85,
+                text=f"{day_total:.1f} HR",
+                showarrow=False,
+                font=dict(size=12, color="#1b8e3e"),
+            )
+    fig.update_layout(
+        height=OVERVIEW_WEEK_HEIGHT_OTHER,
+        margin=dict(l=0, r=0, t=2, b=2),
+        bargap=BAR_GAP,
+        showlegend=False,
+    )
+    fig.update_xaxes(showticklabels=False)
+    if ymax is not None and ymax > 0:
+        fig.update_yaxes(range=[0, ymax], showticklabels=False)
+    else:
+        fig.update_yaxes(showticklabels=False)
+    return fig
+
+
+def _overview_week_summary(week_df: pd.DataFrame, ts_col: str, data_mode: str,
+                           show_pv: bool, show_ess: bool = False) -> str:
+    if data_mode == "Summary":
+        week_load = float(week_df["load_kWh"].sum())
+        week_pv = float(week_df["harvest_used_kWh"].sum()) if show_pv else 0.0
+        week_spill = float(week_df.get("pv_spill_kWh", 0.0).sum()) if "pv_spill_kWh" in week_df else 0.0
+        week_ess = float(week_df.get("batt_discharge_kWh", 0.0).sum()) if "batt_discharge_kWh" in week_df else 0.0
+        pct = 0.0 if week_load <= 0 or not show_pv else (week_pv / week_load) * 100.0
+        pv_label = f"{_format_mwh(week_pv)} MWh" if show_pv else "—"
+        pct_markup = f"<span class='pv-green' style='font-size:16px;margin-left:6px;'>{pct:.0f}%</span>" if show_pv and week_load > 0 else ""
+        ess_label = f"{_format_mwh(week_ess)} MWh" if show_ess else "—"
+        ess_pct = 0.0 if week_load <= 0 or not show_ess else (week_ess / week_load) * 100.0
+        ess_pct_markup = f"<span style='color:{COLOR_BATT};font-size:16px;margin-left:6px;'>{ess_pct:.0f}%</span>" if show_ess and week_load > 0 else ""
+        html = "<div class='pv-overview-week-summary week'>"
+        spill_label = f"{_format_mwh(week_spill)} MWh" if show_pv else "—"
+        html += f"<div class='pv-spill-line'><span class='pv-yellow' style='font-size:20px;'>{spill_label}</span></div>"
+        html += (
+            f"<div><span style='color:{COLOR_BATT};font-size:20px;font-weight:700;'>{ess_label}</span>"
+            f"{ess_pct_markup}</div>"
+        )
+        html += f"<div><span class='pv-green' style='font-size:20px;'>{pv_label}</span>{pct_markup}</div>"
+        html += f"<div><span class='pv-red' style='font-size:20px;'>{_format_mwh(week_load)} MWh</span></div>"
+        html += "</div>"
+        return html
+    if data_mode == "Load":
+        week_load = float(week_df["load_kWh"].sum())
+        html = "<div class='pv-overview-week-summary week week-small'>"
+        html += "<div><span class='pv-green' style='font-size:20px;'>&nbsp;</span></div>"
+        html += f"<div><span class='pv-red' style='font-size:20px;'>{_format_mwh(week_load)} MWh</span></div>"
+        html += "</div>"
+        return html
+    if IRRADIANCE_COL not in week_df:
+        return "<div class='pv-overview-week-summary week week-small'>&nbsp;</div>"
+    avg_hr = _week_irradiance_avg_hr(week_df, ts_col)
+    avg_label = f"{avg_hr:.1f} HR" if avg_hr > 0 else "—"
+    html = "<div class='pv-overview-week-summary week week-small'>"
+    html += f"<div style='text-align:left; width:100%;'><span class='pv-green' style='font-size:20px;'>{avg_label}</span></div>"
+    html += "</div>"
+    return html
+
+
+def _week_irradiance_avg_hr(week_df: pd.DataFrame, ts_col: str) -> float:
+    if IRRADIANCE_COL not in week_df or week_df.empty:
+        return 0.0
+    data = week_df[[ts_col, IRRADIANCE_COL]].copy()
+    data["_date"] = pd.to_datetime(data[ts_col]).dt.date
+    daily = data.groupby("_date")[IRRADIANCE_COL].sum(min_count=1)
+    if daily.empty:
+        return 0.0
+    avg_kwh_m2 = float(daily.mean()) / 1000.0
+    return max(avg_kwh_m2, 0.0)
+
+
+def _overview_week_label_markup(week_df: pd.DataFrame, ts_col: str, week_no: int, data_mode: str) -> str:
+    classes = ["pv-overview-week-wrap", "chart" if data_mode == "Summary" else "chart-small"]
+    label = f"W{week_no:02d}"
+    html = (
+        f"<div class='{' '.join(classes)}'>"
+        "<div class='pv-overview-week-label-block'>"
+        f"<span class='pv-overview-week-label'>{label}</span>"
+        "</div>"
+        "</div>"
+    )
+    return html
 
 
 def render_detail_summary(container, df: pd.DataFrame, g_cols: list[str]):
@@ -891,115 +1378,157 @@ def render_generator_overview(detail: pd.DataFrame, ts_col: str, g_cols: list[st
     st.dataframe(overview_table, use_container_width=True, hide_index=True)
 
 
-def render_pv_overview(sim_all: pd.DataFrame, ts_col: str, weeks: List[tuple[int, int]]):
+def render_pv_overview(sim_all: pd.DataFrame, ts_col: str, weeks: List[tuple[int, int]],
+                       data_mode: str, irradiance_enabled: bool):
     if not weeks:
         st.info("No week data available for the overview.")
         return
 
-    st.markdown(OVERVIEW_CSS, unsafe_allow_html=True)
-    show_pv = st.toggle(
-        "PV Direct",
-        value=st.session_state.get("pv_overview_show_pv", True),
-        key="pv_overview_show_pv"
+    is_summary = data_mode == "Summary"
+    is_load = data_mode == "Load"
+    is_irr = data_mode == "Irradiance"
+
+    if is_irr and not irradiance_enabled:
+        st.info("Irradiance view is available only when NASA GHI data is selected.")
+        return
+    if data_mode not in {"Summary", "Load", "Irradiance"}:
+        st.info("Selected data mode is not available.")
+        return
+
+    st.markdown(
+        OVERVIEW_CSS + """
+<style>
+.block-container { padding-top: 32px !important; }
+.pv-row > div[data-testid="column"] > div[data-testid="stVerticalBlock"] {
+    padding-bottom: 0 !important;
+    margin-bottom: 0 !important;
+}
+div[data-testid="stToggle"] {
+    margin-top: 0 !important;
+    margin-bottom: 0 !important;
+    padding-bottom: 0 !important;
+    padding-top: 0 !important;
+}
+div[data-testid="stVerticalBlock"]:has(> div[data-testid="stToggle"]) {
+    margin-bottom: 0 !important;
+    padding-bottom: 0 !important;
+}
+div[data-testid="stVerticalBlock"]:has(> div[data-testid="stToggle"]) + div[data-testid="stVerticalBlock"]:has(> div[data-testid="stToggle"]) {
+    margin-top: -14px !important;
+}
+</style>""",
+        unsafe_allow_html=True
     )
-    display_weeks = weeks
-    global_ymax = _overview_ymax(sim_all, show_pv)
+    st.session_state.setdefault("pv_overview_show_pv", False)
+    st.session_state.setdefault("pv_overview_show_ess", False)
+    st.session_state.setdefault("pv_overview_show_night", False)
 
-    header_cols = st.columns([0.6] + [1] * 7 + [1])
+    show_pv = st.session_state["pv_overview_show_pv"]
+    show_ess = st.session_state["pv_overview_show_ess"]
+    show_night = st.session_state["pv_overview_show_night"]
+    if not show_pv and show_ess:
+        st.session_state["pv_overview_show_ess"] = False
+        show_ess = False
+    if is_summary:
+        show_night = st.toggle("Show Night", key="pv_overview_show_night")
+        show_pv = st.toggle("PV Direct", key="pv_overview_show_pv")
+        show_ess = st.toggle("ESS", disabled=not show_pv, key="pv_overview_show_ess")
+    elif is_load:
+        show_pv = False
+        show_ess = False
+        show_night = st.toggle("Show Night", key="pv_overview_show_night")
+    else:
+        show_pv = st.session_state["pv_overview_show_pv"]
+        show_ess = st.session_state["pv_overview_show_ess"]
+        show_night = st.session_state["pv_overview_show_night"]
+
+    header_cols = st.columns([0.35, 5.65, 1], gap="small")
     header_cols[0].markdown("&nbsp;")
-    for idx, label in enumerate(OVERVIEW_DAY_LABELS):
-        header_cols[1 + idx].markdown(f"<div class='pv-overview-day-header'>{label}</div>", unsafe_allow_html=True)
-    header_cols[-1].markdown("<div class='pv-overview-day-header'>Week Total</div>", unsafe_allow_html=True)
-
-    for year_sel, week_sel in display_weeks:
-        week_full = _week_dataframe(sim_all, ts_col, year_sel, week_sel)
-        monday = iso_week_monday(year_sel, week_sel)
-        row_cols = st.columns([0.6] + [1] * 7 + [1], gap="small")
-        with row_cols[0]:
-            st.markdown(f"<div class='pv-overview-week-label'>W{week_sel:02d}</div>", unsafe_allow_html=True)
-        for day_idx, label in enumerate(OVERVIEW_DAY_LABELS):
-            day_date = monday + timedelta(days=day_idx)
-            day_index = build_day_index(day_date)
-            day_slice = week_full.reindex(day_index).fillna(0.0)
-            fig = _overview_day_chart(day_slice, day_index, show_pv, global_ymax)
-            day_pv = float(day_slice["harvest_used_kWh"].sum()) if show_pv else 0.0
-            day_load = float(day_slice["load_kWh"].sum())
-            with row_cols[1 + day_idx]:
-                top_class = "pv-overview-day-top" + ("" if show_pv else " muted")
-                top_value = _format_mwh(day_pv) if show_pv else "—"
-                st.markdown(f"<div class='{top_class}'>{top_value}</div>", unsafe_allow_html=True)
-                chart_key = f"pv_overview_day_{year_sel}_{week_sel}_{day_idx}"
-                st.plotly_chart(
-                    fig,
-                    use_container_width=True,
-                    config={"displayModeBar": False},
-                    key=chart_key
-                )
-                st.markdown(
-                    f"<div class='pv-overview-day-bottom'>{_format_mwh(day_load)}</div>",
-                    unsafe_allow_html=True
-                )
-        week_pv = float(week_full["harvest_used_kWh"].sum())
-        week_load = float(week_full["load_kWh"].sum())
-        pct = 0.0 if week_load <= 0 else (week_pv / week_load) * 100.0
-        if not show_pv:
-            week_pv = 0.0
-            pct = 0.0
-        summary_html = "<div class='pv-overview-week-summary week'>"
-        if show_pv and week_load > 0:
-            pv_value = _format_mwh(week_pv)
-            summary_html += (
-                f"<div><span class='pv-green' style='font-size:20px;'>{pv_value} MWh</span> "
-                f"<span class='pv-green' style='font-size:16px;margin-left:6px;'>{pct:.0f}%</span></div>"
-            )
-        else:
-            summary_html += "<div><span class='pv-green' style='font-size:20px;'>—</span></div>"
-        summary_html += f"<div><span class='pv-red' style='font-size:20px;'>{_format_mwh(week_load)} MWh</span></div>"
-        summary_html += "</div>"
-        row_cols[-1].markdown(summary_html, unsafe_allow_html=True)
-
-    st.markdown("<div class='pv-overview-divider'></div>", unsafe_allow_html=True)
-    sim_copy = sim_all.copy()
-    sim_copy["_date"] = pd.to_datetime(sim_copy[ts_col]).dt.date
-    daily = sim_copy.groupby("_date")[["load_kWh", "harvest_kWh", "harvest_used_kWh"]].sum()
-    daily["dow"] = pd.to_datetime(daily.index).dayofweek
-    dow_avg = daily.groupby("dow").mean().reindex(range(7)).fillna(0.0)
-    avg_cols = st.columns([0.6] + [1] * 7 + [1])
-    avg_cols[0].markdown("<div class='pv-overview-avg-label'>Avg</div>", unsafe_allow_html=True)
-    for day_idx, label in enumerate(OVERVIEW_DAY_LABELS):
-        stats = dow_avg.iloc[day_idx] if not dow_avg.empty else pd.Series({"load_kWh": 0, "harvest_kWh": 0, "harvest_used_kWh": 0})
-        avg_load = float(stats.get("load_kWh", 0.0))
-        avg_harvest = float(stats.get("harvest_kWh", 0.0))
-        avg_pv = float(stats.get("harvest_used_kWh", 0.0)) if show_pv else 0.0
-        pct = 0.0 if avg_harvest <= 0 or not show_pv else (avg_pv / avg_harvest) * 100.0
-        pv_text = f"{_format_mwh(avg_pv)} MWh" if show_pv else "—"
-        if show_pv:
-            pct_text = f"{pct:.0f}% Used" if avg_harvest > 0 else "0% Used"
-            pv_markup = (
-                f"<span class='pv-green' style='font-size:18px;'>{pv_text}</span>"
-                f"<span class='pv-green' style='font-size:14px;margin-left:6px;'>{pct_text}</span>"
-            )
-        else:
-            pv_markup = "<span class='pv-green' style='font-size:18px;'>—</span>"
-        avg_cols[1 + day_idx].markdown(
-            f"<div class='pv-overview-week-summary'><div>{pv_markup}</div>"
-            f"<div><span class='pv-red' style='font-size:18px;'>{_format_mwh(avg_load)} MWh</span></div></div>",
+    header_cols[1].markdown(
+        "<div class='pv-overview-day-strip'>"
+        + "".join(f"<span>{label}</span>" for label in OVERVIEW_DAY_LABELS)
+        + "</div>",
+        unsafe_allow_html=True
+    )
+    if is_summary or is_load:
+        header_cols[2].markdown(
+            "<div class='pv-overview-day-header' style='text-align:center;'>Week Total</div>",
             unsafe_allow_html=True
         )
-    total_pv = float(sim_all["harvest_used_kWh"].sum()) if "harvest_used_kWh" in sim_all else 0.0
-    total_load = float(sim_all["load_kWh"].sum()) if "load_kWh" in sim_all else 0.0
-    if not show_pv:
-        total_pv = 0.0
-    footer_html = "<div class='pv-overview-week-summary'>"
-    if show_pv:
-        footer_html += f"<div><span class='pv-green' style='font-size:18px;'>{_format_mwh(total_pv)} MWh</span></div>"
+    elif is_irr:
+        header_cols[2].markdown(
+            "<div class='pv-overview-day-header' style='text-align:center;'>Week Avg</div>",
+            unsafe_allow_html=True
+        )
     else:
-        footer_html += "<div><span class='pv-green' style='font-size:18px;'>—</span></div>"
-    footer_html += f"<div><span class='pv-red' style='font-size:18px;'>{_format_mwh(total_load)} MWh</span></div>"
-    footer_html += "</div>"
-    avg_cols[-1].markdown(footer_html, unsafe_allow_html=True)
+        header_cols[2].markdown("&nbsp;")
 
-# ---------- Summary panels ----------
+    week_records: list[tuple[int, int, pd.DataFrame]] = []
+    global_irr_max = 0.0
+    for year_sel, week_sel in weeks:
+        week_full = _week_dataframe(sim_all, ts_col, year_sel, week_sel)
+        week_records.append((year_sel, week_sel, week_full))
+        if is_irr and IRRADIANCE_COL in week_full:
+            irr_vals = week_full[IRRADIANCE_COL].to_numpy(dtype=float)
+            finite_vals = irr_vals[np.isfinite(irr_vals)]
+            if finite_vals.size:
+                local_max = float(finite_vals.max())
+                if local_max > global_irr_max:
+                    global_irr_max = local_max
+    irr_ymax = None
+    if is_irr:
+        irr_ymax = global_irr_max if global_irr_max > 0 else None
+
+    for year_sel, week_sel, week_full in week_records:
+        weekly_chart = _overview_week_chart(week_full, ts_col, data_mode, show_pv,
+                                            show_ess, show_night=show_night, irr_ymax=irr_ymax)
+        st.markdown("<div class='pv-row'>", unsafe_allow_html=True)
+        row = st.columns([0.35, 5.65, 1], gap="small")
+        with row[0]:
+            st.markdown(
+                _overview_week_label_markup(week_full, ts_col, week_sel, data_mode),
+                unsafe_allow_html=True
+            )
+        with row[1]:
+            st.plotly_chart(weekly_chart, use_container_width=True, config={"displayModeBar": False})
+        with row[2]:
+            st.markdown(_overview_week_summary(week_full, ts_col, data_mode, show_pv, show_ess), unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    if is_summary or is_load:
+        st.markdown("<div class='pv-overview-divider'></div>", unsafe_allow_html=True)
+        st.markdown("<div class='pv-row'>", unsafe_allow_html=True)
+        avg_cols = st.columns([0.35, 5.65, 1], gap="small")
+        avg_cols[0].markdown("<div class='pv-overview-week-wrap avg'><span class='pv-overview-week-label'>Avg</span></div>", unsafe_allow_html=True)
+        avg_html = ""
+        sim_copy = sim_all.copy()
+        sim_copy["_date"] = pd.to_datetime(sim_copy[ts_col]).dt.date
+        daily = sim_copy.groupby("_date")[["load_kWh", "harvest_kWh", "harvest_used_kWh"]].sum()
+        daily["dow"] = pd.to_datetime(daily.index).dayofweek
+        dow_avg = daily.groupby("dow").mean().reindex(range(7)).fillna(0.0)
+        for day_idx, label in enumerate(OVERVIEW_DAY_LABELS):
+            stats = dow_avg.iloc[day_idx] if not dow_avg.empty else pd.Series()
+            if is_summary:
+                avg_load = float(stats.get("load_kWh", 0.0))
+                avg_harvest = float(stats.get("harvest_kWh", 0.0))
+                avg_pv = float(stats.get("harvest_used_kWh", 0.0)) if show_pv else 0.0
+                pct = 0.0 if avg_harvest <= 0 or not show_pv else (avg_pv / avg_harvest) * 100.0
+                pv_text = f"{_format_mwh(avg_pv)} MWh" if show_pv else "—"
+                pct_text = f"{pct:.0f}% Used" if show_pv and avg_harvest > 0 else ""
+                pct_markup = f"<span class='pv-green' style='font-size:14px;margin-left:6px;'>{pct_text}</span>" if pct_text else ""
+                pv_markup = f"<span class='pv-green week-total-text'>{pv_text}</span>{pct_markup}"
+                load_markup = f"<span class='pv-red week-total-text'>{_format_mwh(avg_load)} MWh</span>"
+            else:
+                avg_load = float(stats.get("load_kWh", 0.0))
+                pv_markup = "<span class='pv-green week-total-text'>&nbsp;</span>"
+                load_markup = f"<span class='pv-red week-total-text'>{_format_mwh(avg_load)} MWh</span>"
+            avg_html += f"<div class='pv-overview-day-value'><div>{pv_markup}</div><div>{load_markup}</div></div>"
+        avg_cols[1].markdown(
+            f"<div class='pv-overview-day-values'>{avg_html}</div>",
+            unsafe_allow_html=True
+        )
+        avg_cols[2].markdown("&nbsp;")
+        st.markdown("</div>", unsafe_allow_html=True)
 
 
 def _fmt_trim(v: float, decimals=1) -> str:
@@ -1356,7 +1885,7 @@ def run_pv_mode(load_file, harvest_file, data_source, pv_inputs):
             ).sort_values("_order")
             missing = merged["harvest_kWh"].isna().sum()
             if missing > 0:
-                st.warning(f"{missing} NASA GHI timestamps missing; filled with 0.")
+                st.session_state["nasa_missing_warning"] = f"{missing} NASA GHI timestamps missing; filled with 0."
             harvest_kwh = merged["harvest_kWh"].fillna(0.0)
             irradiance_vals = merged[IRRADIANCE_COL].fillna(0.0)
             pr = float(nasa_defaults.get("pr_pct", 80.0)) / 100.0
@@ -1416,9 +1945,32 @@ def run_pv_mode(load_file, harvest_file, data_source, pv_inputs):
 
     view_mode = st.session_state.view_mode
     if view_mode == "Overview":
-        tf_col.empty()
+        is_nasa_source = data_source == NASA_SOURCE
+        data_options = ["Summary", "Load", "Irradiance"]
+        current_data_mode = st.session_state.get("pv_overview_data_mode", "Summary")
+        if current_data_mode not in data_options or (current_data_mode == "Irradiance" and not is_nasa_source):
+            current_data_mode = "Summary"
+            st.session_state.pv_overview_data_mode = current_data_mode
+        data_key = "pv_overview_data_select"
+        if data_key not in st.session_state or st.session_state[data_key] not in data_options:
+            st.session_state[data_key] = current_data_mode
+        if not is_nasa_source and st.session_state[data_key] == "Irradiance":
+            st.session_state[data_key] = "Summary"
+        with tf_col:
+            data_selected = st.selectbox(
+                "Data",
+                data_options,
+                format_func=lambda opt: f"{opt} (NASA only)" if (opt == "Irradiance" and not is_nasa_source) else opt,
+                key=data_key
+            )
+        if data_selected == "Irradiance" and not is_nasa_source:
+            st.info("Irradiance view is available only when NASA GHI data is selected.")
+            st.session_state[data_key] = "Summary"
+            st.session_state.pv_overview_data_mode = "Summary"
+            st.rerun()
+        st.session_state.pv_overview_data_mode = data_selected
         period_col.empty()
-        render_pv_overview(sim_all, ts_col, weeks)
+        render_pv_overview(sim_all, ts_col, weeks, data_selected, is_nasa_source)
         return
 
     if view_mode == "Energy Chart":
@@ -1482,6 +2034,8 @@ def run_pv_mode(load_file, harvest_file, data_source, pv_inputs):
 
     period_full: pd.DataFrame | None = None
     avg_day_mwh: float | None = None
+    energy_week_show_night = bool(st.session_state.get("energy_show_night_week", False))
+    week_avg_hr: float | None = None
 
     if st.session_state.timeframe == "Week":
         prev_clicked, next_clicked = nav_buttons(
@@ -1497,6 +2051,13 @@ def run_pv_mode(load_file, harvest_file, data_source, pv_inputs):
         if next_clicked:
             st.session_state.week_idx = min(len(weeks)-1, st.session_state.week_idx + 1)
             st.rerun()
+
+        capacity = max(float(pv_inputs["pv_kwp"]), 1e-6)
+        energy_week_show_night = st.toggle(
+            "Show Night",
+            value=energy_week_show_night,
+            key="energy_show_night_week"
+        )
 
         year_sel, week_sel = weeks[st.session_state.week_idx]
         full_index = build_week_index(year_sel, week_sel)
@@ -1612,6 +2173,8 @@ def run_pv_mode(load_file, harvest_file, data_source, pv_inputs):
             grouped = chart_df.groupby(week_ts.dt.normalize())["harvest_kWh"].sum()
             day_hr_map = {pd.to_datetime(idx).strftime("%Y-%m-%d"): round(val / capacity, 1) for idx, val in grouped.items()}
             hover_mode = "week"
+            valid_vals = [val for val in day_hr_map.values() if np.isfinite(val)]
+            week_avg_hr = float(np.mean(valid_vals)) if valid_vals else 0.0
         elif st.session_state.timeframe == "Month":
             if capacity > 0:
                 extra_hr = chart_df["harvest_kWh"].to_numpy(dtype=float) / capacity
@@ -1634,7 +2197,9 @@ def run_pv_mode(load_file, harvest_file, data_source, pv_inputs):
             hover_style=hover_mode,
             day_hr_map=day_hr_map,
             hr_values=hr_values,
-            extra_hr=extra_hr
+            extra_hr=extra_hr,
+            show_night=(st.session_state.timeframe == "Week" and energy_week_show_night),
+            include_time=(st.session_state.timeframe == "Week")
         )
         st.plotly_chart(energy_fig, use_container_width=True, config={"displayModeBar": True})
     with right:
@@ -1668,9 +2233,22 @@ def run_pv_mode(load_file, harvest_file, data_source, pv_inputs):
         )
         hr_fig.update_yaxes(showgrid=False, showticklabels=False)
         hr_fig.update_xaxes(showticklabels=False)
-        irr_col, _ = st.columns([4, 1], gap="large")
+        valid_mask = np.isfinite(hr_daily)
+        avg_hr_month = float(hr_daily[valid_mask].mean()) if valid_mask.any() else 0.0
+        irr_col, irr_info = st.columns([4, 1], gap="large")
         with irr_col:
             st.plotly_chart(hr_fig, use_container_width=True, config={"displayModeBar": False})
+        with irr_info:
+            avg_label = f"{avg_hr_month:.1f} HR" if valid_mask.any() else "—"
+            irr_info.markdown(
+                f"""
+                <div style="text-align:center;padding-top:12px;">
+                    <div style="font-size:16px;font-weight:600;color:#555;">Avg HR</div>
+                    <div style="font-size:30px;font-weight:700;color:{COLOR_PV};">{avg_label}</div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
     elif st.session_state.timeframe == "Year":
         year_ts = pd.to_datetime(chart_df[ts_col]).reset_index(drop=True)
         if hr_values is not None and len(hr_values) == len(chart_df):
@@ -1770,9 +2348,24 @@ def run_pv_mode(load_file, harvest_file, data_source, pv_inputs):
         )
         irradiance_fig.update_yaxes(showticklabels=False, visible=False)
         irradiance_fig.update_xaxes(showticklabels=False)
-        irr_col, _ = st.columns([4, 1], gap="large")
+        irr_col, irr_info = st.columns([4, 1], gap="large")
         with irr_col:
             st.plotly_chart(irradiance_fig, use_container_width=True, config={"displayModeBar": False})
+        if st.session_state.timeframe == "Week":
+            avg_label = "—"
+            if week_avg_hr is not None and week_avg_hr > 0:
+                avg_label = f"{week_avg_hr:.1f} HR"
+            irr_info.markdown(
+                f"""
+                <div style="text-align:center;margin-top:16px;display:flex;flex-direction:column;justify-content:center;height:100%;">
+                    <div style="font-size:16px;font-weight:600;color:#555;">Avg HR</div>
+                    <div style="font-size:30px;font-weight:700;color:{COLOR_PV};">{avg_label}</div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+        else:
+            irr_info.markdown("&nbsp;")
 
     if st.session_state.timeframe == "Week":
         left2, right2 = st.columns([4, 1], gap="large")
@@ -2068,6 +2661,7 @@ pv_sidebar_defaults = st.session_state.setdefault("pv_sidebar_defaults", {
     "rt_eff": 90,
 })
 st.session_state.setdefault("pv_data_source_selection", NASA_SOURCE)
+st.session_state.setdefault("pv_overview_data_mode", "Summary")
 nasa_defaults = st.session_state.setdefault("nasa_fetch", {
     "location": "Jakarta, Indonesia",
     "start": date.today() - timedelta(days=7),
@@ -2141,6 +2735,9 @@ with st.sidebar:
 
         if data_source == NASA_SOURCE:
             st.subheader("NASA GHI", help="Data is 1 year behind.")
+            missing_msg = st.session_state.get("nasa_missing_warning")
+            if missing_msg:
+                st.info(missing_msg)
             nasa_location = st.text_input(
                 "Location / Lat,Lon",
                 value=nasa_defaults["location"],
