@@ -2067,7 +2067,7 @@ pv_sidebar_defaults = st.session_state.setdefault("pv_sidebar_defaults", {
     "init_soc": 20,
     "rt_eff": 90,
 })
-st.session_state.setdefault("pv_data_source_selection", "Calculation")
+st.session_state.setdefault("pv_data_source_selection", NASA_SOURCE)
 nasa_defaults = st.session_state.setdefault("nasa_fetch", {
     "location": "Jakarta, Indonesia",
     "start": date.today() - timedelta(days=7),
@@ -2090,11 +2090,19 @@ with st.sidebar:
         load_file = _upload_control("Load Excel (.xlsx)", "load_upload", types=["xlsx","xlsm","xls"])
 
         st.subheader("PV")
+        data_source_options = [NASA_SOURCE, "Simple Calculation", "Excel Data"]
+        current_source = st.session_state.get("pv_data_source_selection", NASA_SOURCE)
+        if current_source == "Calculation":
+            current_source = "Simple Calculation"
+            st.session_state["pv_data_source_selection"] = current_source
+        if current_source not in data_source_options:
+            current_source = NASA_SOURCE
+            st.session_state["pv_data_source_selection"] = current_source
         data_source = st.selectbox(
             "Data Source",
-            ["Calculation", "Excel Data", NASA_SOURCE],
+            data_source_options,
             key="pv_data_source",
-            index=["Calculation", "Excel Data", NASA_SOURCE].index(st.session_state["pv_data_source_selection"])
+            index=data_source_options.index(current_source)
         )
         st.session_state["pv_data_source_selection"] = data_source
 
