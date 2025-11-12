@@ -1156,6 +1156,197 @@ def _overview_week_chart_summary(week_df: pd.DataFrame, ts_col: str,
     return fig
 
 
+def _overview_period_chart(period_df: pd.DataFrame, ts_col: str, show_pv: bool,
+                           show_ess: bool, freq: str, label_fmt: str) -> go.Figure:
+    df = period_df.copy()
+    timestamps = pd.to_datetime(df[ts_col])
+    df["_period"] = timestamps.dt.to_period(freq)
+    agg_cols = ["load_kWh", "harvest_used_kWh", "batt_discharge_kWh"]
+    grouped = df.groupby("_period")[agg_cols].sum() if agg_cols[0] in df else None
+    if grouped is None or grouped.empty:
+        return go.Figure()
+
+    load_vals = grouped["load_kWh"].to_numpy(dtype=float)
+    remaining = load_vals.copy()
+
+    pv_vals = np.zeros_like(remaining)
+    if show_pv and "harvest_used_kWh" in grouped:
+        pv_source = grouped["harvest_used_kWh"].to_numpy(dtype=float)
+        pv_vals = np.minimum(pv_source, remaining)
+        remaining = np.clip(remaining - pv_vals, 0.0, None)
+
+    ess_vals = np.zeros_like(remaining)
+    if show_ess and "batt_discharge_kWh" in grouped:
+        ess_source = np.maximum(grouped["batt_discharge_kWh"].to_numpy(dtype=float), 0.0)
+        ess_vals = np.minimum(ess_source, remaining)
+        remaining = np.clip(remaining - ess_vals, 0.0, None)
+
+    labels = grouped.index.to_timestamp()
+    if label_fmt == "day":
+        x_labels = labels.strftime("%d")
+    elif label_fmt == "month":
+        x_labels = labels.strftime("%b")
+    else:
+        x_labels = labels.strftime("%Y-%m-%d")
+
+    fig = go.Figure()
+    idx = np.arange(len(grouped))
+    tooltip = lambda vals: np.stack([np.rint(np.abs(vals)).astype(int),
+                                     labels.strftime("%d %b %Y")], axis=1)
+    if show_pv:
+        fig.add_bar(
+            x=idx,
+            y=pv_vals,
+            width=BAR_WIDTH,
+            marker_color=COLOR_PV,
+            showlegend=False,
+            customdata=tooltip(pv_vals),
+            hovertemplate="%{customdata[0]} kWh, %{customdata[1]}<extra></extra>",
+        )
+    if show_ess:
+        fig.add_bar(
+            x=idx,
+            y=ess_vals,
+            width=BAR_WIDTH,
+            marker_color=COLOR_BATT,
+            showlegend=False,
+            customdata=tooltip(ess_vals),
+            hovertemplate="%{customdata[0]} kWh, %{customdata[1]}<extra></extra>",
+        )
+    fig.add_bar(
+        x=idx,
+        y=remaining,
+        width=BAR_WIDTH,
+        marker_color=COLOR_CHART_BLACK,
+        showlegend=False,
+        customdata=tooltip(remaining),
+        hovertemplate="%{customdata[0]} kWh, %{customdata[1]}<extra></extra>",
+    )
+    fig.add_bar(
+        x=idx,
+        y=-load_vals,
+        width=BAR_WIDTH,
+        marker_color=COLOR_LOAD,
+        showlegend=False,
+        customdata=tooltip(load_vals),
+        hovertemplate="%{customdata[0]} kWh, %{customdata[1]}<extra></extra>",
+    )
+    ymax = max(_overview_ymax(pd.DataFrame({"load_kWh": load_vals}), False), 1.0)
+    fig.update_layout(
+        barmode="relative",
+        height=OVERVIEW_WEEK_HEIGHT,
+        margin=dict(l=0, r=0, t=8, b=20),
+        bargap=BAR_GAP,
+        showlegend=False,
+    )
+    fig.update_xaxes(
+        tickmode="array",
+        tickvals=idx,
+        ticktext=x_labels,
+        tickangle=0,
+        showgrid=False,
+    )
+    fig.update_yaxes(range=[-ymax, ymax], showticklabels=False)
+    return fig
+
+
+def _overview_period_chart_load(period_df: pd.DataFrame, ts_col: str,
+                                freq: str, label_fmt: str) -> go.Figure:
+    df = period_df.copy()
+    timestamps = pd.to_datetime(df[ts_col])
+    df["_period"] = timestamps.dt.to_period(freq)
+    grouped = df.groupby("_period")["load_kWh"].sum()
+    if grouped.empty:
+        return go.Figure()
+    load_vals = grouped.to_numpy(dtype=float)
+    idx = np.arange(len(grouped))
+    labels = grouped.index.to_timestamp()
+    if label_fmt == "day":
+        x_labels = labels.strftime("%d")
+    elif label_fmt == "month":
+        x_labels = labels.strftime("%b")
+    else:
+        x_labels = labels.strftime("%Y-%m-%d")
+
+    time_labels = labels.strftime("%d %b %Y")
+    hover_data = np.stack([np.rint(np.abs(load_vals)).astype(int), time_labels], axis=1)
+    fig = go.Figure()
+    fig.add_bar(
+        x=idx,
+        y=load_vals,
+        width=BAR_WIDTH,
+        marker_color=COLOR_CHART_BLACK,
+        customdata=hover_data,
+        hovertemplate="%{customdata[0]} kWh, %{customdata[1]}<extra></extra>",
+        showlegend=False,
+    )
+    ymax = max(np.max(load_vals), 1.0)
+    ymax = np.ceil(ymax / 25.0) * 25.0
+    fig.update_layout(
+        barmode="relative",
+        height=OVERVIEW_WEEK_HEIGHT_OTHER,
+        margin=dict(l=0, r=0, t=8, b=20),
+        bargap=BAR_GAP,
+        showlegend=False,
+    )
+    fig.update_xaxes(
+        tickmode="array",
+        tickvals=idx,
+        ticktext=x_labels,
+        tickangle=0,
+        showgrid=False,
+    )
+    fig.update_yaxes(range=[0, ymax], showticklabels=False)
+    return fig
+
+
+def _overview_period_chart_irradiance(period_df: pd.DataFrame, ts_col: str,
+                                      freq: str, label_fmt: str) -> go.Figure:
+    if IRRADIANCE_COL not in period_df.columns:
+        return go.Figure()
+    df = period_df[[ts_col, IRRADIANCE_COL]].copy()
+    ts = pd.to_datetime(df[ts_col])
+    df["_period"] = ts.dt.to_period(freq)
+    grouped = df.groupby("_period")[IRRADIANCE_COL].sum()
+    if grouped.empty:
+        return go.Figure()
+    vals = grouped.to_numpy(dtype=float)
+    idx = np.arange(len(grouped))
+    labels = grouped.index.to_timestamp()
+    if label_fmt == "day":
+        x_labels = labels.strftime("%d")
+    else:
+        x_labels = labels.strftime("%b")
+    display_labels = labels.strftime("%d %b %Y")
+    hover = np.stack([np.rint(vals).astype(int), display_labels], axis=1)
+    fig = go.Figure()
+    fig.add_bar(
+        x=idx,
+        y=vals,
+        width=BAR_WIDTH,
+        marker_color=COLOR_PV,
+        showlegend=False,
+        customdata=hover,
+        hovertemplate="%{customdata[0]} Wh/m², %{customdata[1]}<extra></extra>",
+    )
+    ymax = max(np.max(vals), 1.0)
+    ymax = np.ceil(ymax / 100.0) * 100.0
+    fig.update_layout(
+        height=OVERVIEW_WEEK_HEIGHT_OTHER,
+        margin=dict(l=0, r=0, t=8, b=20),
+        bargap=BAR_GAP,
+        showlegend=False,
+    )
+    fig.update_xaxes(
+        tickmode="array",
+        tickvals=idx,
+        ticktext=x_labels,
+        showgrid=False,
+    )
+    fig.update_yaxes(range=[0, ymax], showticklabels=False)
+    return fig
+
+
 def _overview_week_chart_irradiance(week_df: pd.DataFrame, ts_col: str,
                                     ymax: Optional[float] = None) -> go.Figure:
     fig = go.Figure()
@@ -1225,7 +1416,7 @@ def _overview_week_chart_irradiance(week_df: pd.DataFrame, ts_col: str,
 
 
 def _overview_week_summary(week_df: pd.DataFrame, ts_col: str, data_mode: str,
-                           show_pv: bool, show_ess: bool = False) -> str:
+                           show_pv: bool, show_ess: bool = False, timeframe: str = "Week") -> str:
     if data_mode == "Summary":
         week_load = float(week_df["load_kWh"].sum())
         week_pv = float(week_df["harvest_used_kWh"].sum()) if show_pv else 0.0
@@ -1257,18 +1448,21 @@ def _overview_week_summary(week_df: pd.DataFrame, ts_col: str, data_mode: str,
         return html
     if IRRADIANCE_COL not in week_df:
         return "<div class='pv-overview-week-summary week week-small'>&nbsp;</div>"
-    avg_hr = _week_irradiance_avg_hr(week_df, ts_col)
+    avg_hr = _period_irradiance_avg_hr(week_df, ts_col)
     avg_label = f"{avg_hr:.1f} HR" if avg_hr > 0 else "—"
+    title = "Week Avg" if timeframe == "Week" else ("Month Avg" if timeframe == "Month" else "Year Avg")
     html = "<div class='pv-overview-week-summary week week-small'>"
-    html += f"<div style='text-align:left; width:100%;'><span class='pv-green' style='font-size:20px;'>{avg_label}</span></div>"
-    html += "</div>"
+    html += f"<div style='text-align:center; width:100%;'>"
+    html += f"<div style='font-size:14px;color:#777;'>{title}</div>"
+    html += f"<div style='font-size:20px;font-weight:700;color:{COLOR_PV};'>{avg_label}</div>"
+    html += "</div></div>"
     return html
 
 
-def _week_irradiance_avg_hr(week_df: pd.DataFrame, ts_col: str) -> float:
-    if IRRADIANCE_COL not in week_df or week_df.empty:
+def _period_irradiance_avg_hr(period_df: pd.DataFrame, ts_col: str) -> float:
+    if IRRADIANCE_COL not in period_df or period_df.empty:
         return 0.0
-    data = week_df[[ts_col, IRRADIANCE_COL]].copy()
+    data = period_df[[ts_col, IRRADIANCE_COL]].copy()
     data["_date"] = pd.to_datetime(data[ts_col]).dt.date
     daily = data.groupby("_date")[IRRADIANCE_COL].sum(min_count=1)
     if daily.empty:
@@ -1277,9 +1471,8 @@ def _week_irradiance_avg_hr(week_df: pd.DataFrame, ts_col: str) -> float:
     return max(avg_kwh_m2, 0.0)
 
 
-def _overview_week_label_markup(week_df: pd.DataFrame, ts_col: str, week_no: int, data_mode: str) -> str:
+def _overview_label_markup(label: str, data_mode: str) -> str:
     classes = ["pv-overview-week-wrap", "chart" if data_mode == "Summary" else "chart-small"]
-    label = f"W{week_no:02d}"
     html = (
         f"<div class='{' '.join(classes)}'>"
         "<div class='pv-overview-week-label-block'>"
@@ -1378,15 +1571,50 @@ def render_generator_overview(detail: pd.DataFrame, ts_col: str, g_cols: list[st
     st.dataframe(overview_table, use_container_width=True, hide_index=True)
 
 
-def render_pv_overview(sim_all: pd.DataFrame, ts_col: str, weeks: List[tuple[int, int]],
-                       data_mode: str, irradiance_enabled: bool):
-    if not weeks:
-        st.info("No week data available for the overview.")
-        return
+def _month_dataframe(sim_all: pd.DataFrame, ts_col: str, year_sel: int, month_sel: int) -> pd.DataFrame:
+    full_index = build_month_index(year_sel, month_sel)
+    month_df = sim_all[(sim_all["year"] == year_sel) & (sim_all["month"] == month_sel)].copy()
+    if ts_col not in month_df.columns:
+        month_df[ts_col] = pd.to_datetime(month_df.index)
+    month_df = month_df.set_index(pd.to_datetime(month_df[ts_col])).sort_index()
+    month_full = pd.DataFrame(index=full_index)
+    for col in VALUE_COLS:
+        month_full[col] = month_df[col].reindex(full_index).fillna(0.0)
+    if IRRADIANCE_COL in month_df.columns:
+        month_full[IRRADIANCE_COL] = month_df[IRRADIANCE_COL].reindex(full_index).fillna(0.0)
+    if "soc_pct" in month_df.columns:
+        month_full["soc_pct"] = month_df["soc_pct"].reindex(full_index).ffill().fillna(0.0)
+    else:
+        month_full["soc_pct"] = 0.0
+    month_full[ts_col] = month_full.index
+    return month_full
 
+
+def _year_dataframe(sim_all: pd.DataFrame, ts_col: str, year_sel: int) -> pd.DataFrame:
+    year_df = sim_all[sim_all["year"] == year_sel].copy()
+    agg_spec = {col: "sum" for col in VALUE_COLS}
+    if IRRADIANCE_COL in year_df.columns:
+        agg_spec[IRRADIANCE_COL] = "sum"
+    agg_spec["date"] = "nunique"
+    monthly = year_df.groupby("month").agg(agg_spec)
+    monthly = monthly.reindex(range(1, 13), fill_value=0.0)
+    monthly = monthly.reset_index().rename(columns={"month": "month_num", "date": "days_present"})
+    monthly["days_present"] = monthly["days_present"].fillna(0).astype(int)
+    month_dates = pd.to_datetime({"year": year_sel, "month": monthly["month_num"], "day": 1})
+    monthly[ts_col] = month_dates
+    return monthly
+
+
+def render_pv_overview(sim_all: pd.DataFrame, ts_col: str, weeks: List[tuple[int, int]],
+                       data_mode: str, irradiance_enabled: bool, timeframe: str = "Week"):
+    timeframe = timeframe if timeframe in {"Week", "Month", "Year"} else "Week"
     is_summary = data_mode == "Summary"
     is_load = data_mode == "Load"
     is_irr = data_mode == "Irradiance"
+
+    if is_irr and timeframe not in {"Week", "Month", "Year"}:
+        timeframe = "Week"
+    allow_night = (timeframe == "Week")
 
     if is_irr and not irradiance_enabled:
         st.info("Irradiance view is available only when NASA GHI data is selected.")
@@ -1429,69 +1657,137 @@ div[data-testid="stVerticalBlock"]:has(> div[data-testid="stToggle"]) + div[data
         st.session_state["pv_overview_show_ess"] = False
         show_ess = False
     if is_summary:
-        show_night = st.toggle("Show Night", key="pv_overview_show_night")
+        if allow_night:
+            show_night = st.toggle("Show Night", key="pv_overview_show_night")
+        else:
+            show_night = False
+            st.session_state["pv_overview_show_night"] = False
         show_pv = st.toggle("PV Direct", key="pv_overview_show_pv")
         show_ess = st.toggle("ESS", disabled=not show_pv, key="pv_overview_show_ess")
     elif is_load:
         show_pv = False
         show_ess = False
-        show_night = st.toggle("Show Night", key="pv_overview_show_night")
+        if allow_night:
+            show_night = st.toggle("Show Night", key="pv_overview_show_night")
+        else:
+            show_night = False
+            st.session_state["pv_overview_show_night"] = False
     else:
         show_pv = st.session_state["pv_overview_show_pv"]
         show_ess = st.session_state["pv_overview_show_ess"]
-        show_night = st.session_state["pv_overview_show_night"]
+        show_night = st.session_state["pv_overview_show_night"] if allow_night else False
 
+    period_label = "Week" if timeframe == "Week" else timeframe
     header_cols = st.columns([0.35, 5.65, 1], gap="small")
     header_cols[0].markdown("&nbsp;")
-    header_cols[1].markdown(
-        "<div class='pv-overview-day-strip'>"
-        + "".join(f"<span>{label}</span>" for label in OVERVIEW_DAY_LABELS)
-        + "</div>",
-        unsafe_allow_html=True
-    )
+    if timeframe == "Week":
+        header_cols[1].markdown(
+            "<div class='pv-overview-day-strip'>"
+            + "".join(f"<span>{label}</span>" for label in OVERVIEW_DAY_LABELS)
+            + "</div>",
+            unsafe_allow_html=True
+        )
+    else:
+        header_cols[1].markdown("&nbsp;")
     if is_summary or is_load:
         header_cols[2].markdown(
-            "<div class='pv-overview-day-header' style='text-align:center;'>Week Total</div>",
+            f"<div class='pv-overview-day-header' style='text-align:center;'>{period_label} Total</div>",
             unsafe_allow_html=True
         )
     elif is_irr:
         header_cols[2].markdown(
-            "<div class='pv-overview-day-header' style='text-align:center;'>Week Avg</div>",
+            f"<div class='pv-overview-day-header' style='text-align:center;'>{period_label} Avg</div>",
             unsafe_allow_html=True
         )
     else:
         header_cols[2].markdown("&nbsp;")
 
-    week_records: list[tuple[int, int, pd.DataFrame]] = []
+    allow_night = (timeframe == "Week")
+    if not allow_night:
+        show_night = False
+
+    period_records: list[tuple[str, pd.DataFrame, pd.DataFrame]] = []
     global_irr_max = 0.0
-    for year_sel, week_sel in weeks:
-        week_full = _week_dataframe(sim_all, ts_col, year_sel, week_sel)
-        week_records.append((year_sel, week_sel, week_full))
-        if is_irr and IRRADIANCE_COL in week_full:
-            irr_vals = week_full[IRRADIANCE_COL].to_numpy(dtype=float)
-            finite_vals = irr_vals[np.isfinite(irr_vals)]
-            if finite_vals.size:
-                local_max = float(finite_vals.max())
-                if local_max > global_irr_max:
-                    global_irr_max = local_max
+    if timeframe == "Week":
+        if not weeks:
+            st.info("No week data available for the overview.")
+            return
+        for year_sel, week_sel in weeks:
+            week_full = _week_dataframe(sim_all, ts_col, year_sel, week_sel)
+            label = f"W{week_sel:02d} {year_sel}"
+            period_records.append((label, week_full, week_full))
+            if is_irr and IRRADIANCE_COL in week_full:
+                irr_vals = week_full[IRRADIANCE_COL].to_numpy(dtype=float)
+                finite_vals = irr_vals[np.isfinite(irr_vals)]
+                if finite_vals.size:
+                    local_max = float(finite_vals.max())
+                    if local_max > global_irr_max:
+                        global_irr_max = local_max
+    elif timeframe == "Month":
+        months = month_list(sim_all)
+        if not months:
+            st.info("No month data available for the overview.")
+            return
+        for year_sel, month_sel in months:
+            month_full = _month_dataframe(sim_all, ts_col, year_sel, month_sel)
+            label = datetime(year_sel, month_sel, 1).strftime("%b %Y")
+            period_records.append((label, month_full, month_full))
+            if is_irr and IRRADIANCE_COL in month_full:
+                irr_vals = month_full[IRRADIANCE_COL].to_numpy(dtype=float)
+                finite_vals = irr_vals[np.isfinite(irr_vals)]
+                if finite_vals.size:
+                    local_max = float(finite_vals.max())
+                    if local_max > global_irr_max:
+                        global_irr_max = local_max
+    else:  # Year
+        years = year_list(sim_all)
+        if not years:
+            st.info("No year data available for the overview.")
+            return
+        for year_sel in years:
+            year_full = _year_dataframe(sim_all, ts_col, year_sel)
+            year_raw = sim_all[sim_all["year"] == year_sel].copy()
+            label = str(year_sel)
+            period_records.append((label, year_full, year_raw))
+            if is_irr and IRRADIANCE_COL in year_full:
+                irr_vals = year_full[IRRADIANCE_COL].to_numpy(dtype=float)
+                finite_vals = irr_vals[np.isfinite(irr_vals)]
+                if finite_vals.size:
+                    local_max = float(finite_vals.max())
+                    if local_max > global_irr_max:
+                        global_irr_max = local_max
     irr_ymax = None
     if is_irr:
         irr_ymax = global_irr_max if global_irr_max > 0 else None
 
-    for year_sel, week_sel, week_full in week_records:
-        weekly_chart = _overview_week_chart(week_full, ts_col, data_mode, show_pv,
-                                            show_ess, show_night=show_night, irr_ymax=irr_ymax)
+    for label, period_df, summary_df in period_records:
+        if timeframe == "Week":
+            chart = _overview_week_chart(period_df, ts_col, data_mode, show_pv,
+                                         show_ess, show_night=(show_night if allow_night else False),
+                                         irr_ymax=irr_ymax)
+        else:
+            freq = "D" if timeframe == "Month" else "M"
+            label_fmt = "day" if timeframe == "Month" else "month"
+            if data_mode == "Summary":
+                chart = _overview_period_chart(period_df, ts_col, show_pv, show_ess, freq, label_fmt)
+            elif data_mode == "Load":
+                chart = _overview_period_chart_load(period_df, ts_col, freq, label_fmt)
+            elif data_mode == "Irradiance":
+                chart = _overview_period_chart_irradiance(period_df, ts_col, freq, label_fmt)
+            else:
+                chart = _overview_week_chart(period_df, ts_col, data_mode, show_pv,
+                                             show_ess, show_night=False, irr_ymax=irr_ymax)
         st.markdown("<div class='pv-row'>", unsafe_allow_html=True)
         row = st.columns([0.35, 5.65, 1], gap="small")
         with row[0]:
             st.markdown(
-                _overview_week_label_markup(week_full, ts_col, week_sel, data_mode),
+                _overview_label_markup(label, data_mode),
                 unsafe_allow_html=True
             )
         with row[1]:
-            st.plotly_chart(weekly_chart, use_container_width=True, config={"displayModeBar": False})
+            st.plotly_chart(chart, use_container_width=True, config={"displayModeBar": False})
         with row[2]:
-            st.markdown(_overview_week_summary(week_full, ts_col, data_mode, show_pv, show_ess), unsafe_allow_html=True)
+            st.markdown(_overview_week_summary(summary_df, ts_col, data_mode, show_pv, show_ess, timeframe), unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
     if is_summary or is_load:
@@ -1552,6 +1848,12 @@ def _fmt_pv_capacity(pv_kwp: float) -> str:
     return f"{_fmt_trim(pv_kwp,1)} kWp"
 
 
+def _fmt_summary_mwh(val_mwh: float) -> str:
+    if abs(val_mwh) >= 100:
+        return f"{int(round(val_mwh))}"
+    return _fmt_trim(val_mwh, 1)
+
+
 def render_week_summary(container, batt_mwh: float, pv_kwp: float, week_df: pd.DataFrame, avg_day_mwh: float | None = None):
     total_load = float(week_df["load_kWh"].sum())
     pv_direct  = float(week_df["harvest_used_kWh"].sum())
@@ -1565,44 +1867,302 @@ def render_week_summary(container, batt_mwh: float, pv_kwp: float, week_df: pd.D
     <style>
     .ess-wrap { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; padding-left: 8px; }
     .ess-title { font-size: 30px; font-weight: 700; margin: 0 0 6px 0; text-align: left; }
+    .ess-title + .ess-title { margin-top: -4px; }
     .ess-line  { font-size: 18px; display: flex; justify-content: space-between; width: 260px; }
-    .ess-small { font-size: 18px; margin-top: 6px; text-align: left; }
     .ess-hr    { border-top: 1px solid #e5e5e5; margin: 8px 0; }
     </style>
     """
     html = f"""
     {css}
     <div class="ess-wrap">
+      <div class="ess-title">PV {_fmt_pv_capacity(pv_kwp)}</div>
       <div class="ess-title">ESS { _fmt_trim(batt_mwh,1) } MWh</div>
-      <div class="ess-small"><b>PV</b> {_fmt_pv_capacity(pv_kwp)}</div>
       <div style="height:6px"></div>
-      <div class="ess-line"><span>PV Direct</span><span>{_fmt_trim(pv_direct/1000,1)}&nbsp;MWh&nbsp;&nbsp;{int(round(pv_pct))}%</span></div>
-      <div class="ess-line"><span>ESS</span><span>{_fmt_trim(ess_used/1000,1)}&nbsp;MWh&nbsp;&nbsp;{int(round(ess_pct))}%</span></div>
-      <div class="ess-line"><span>Genset</span><span>{_fmt_trim(genset/1000,2)}&nbsp;MWh&nbsp;&nbsp;{int(round(gen_pct))}%</span></div>
+      <div class="ess-line"><span>PV Direct</span><span>{_fmt_summary_mwh(pv_direct/1000)}&nbsp;MWh&nbsp;&nbsp;{int(round(pv_pct))}%</span></div>
+      <div class="ess-line"><span>ESS</span><span>{_fmt_summary_mwh(ess_used/1000)}&nbsp;MWh&nbsp;&nbsp;{int(round(ess_pct))}%</span></div>
+      <div class="ess-line"><span>Grid</span><span>{_fmt_summary_mwh(genset/1000)}&nbsp;MWh&nbsp;&nbsp;{int(round(gen_pct))}%</span></div>
       <div class="ess-hr"></div>
-      <div class="ess-line"><span><b>Load Total</b></span><span><b>{_fmt_trim(total_load/1000,1)}&nbsp;MWh</b></span></div>
-      {f'<div class="ess-line"><span>Avg / day</span><span>{_fmt_trim(avg_day_mwh,1)}&nbsp;MWh</span></div>' if avg_day_mwh is not None else ''}
+      <div class="ess-line"><span><b>Load Total</b></span><span><b>{_fmt_summary_mwh(total_load/1000)}&nbsp;MWh</b></span></div>
+      {f'<div class="ess-line"><span>Avg / day</span><span>{_fmt_summary_mwh(avg_day_mwh)}&nbsp;MWh</span></div>' if avg_day_mwh is not None else ''}
     </div>
     """
     container.markdown(html, unsafe_allow_html=True)
 
 
-def render_spill_summary(container, week_df: pd.DataFrame):
-    spill = float(week_df["pv_spill_kWh"].sum())
-    val = _fmt_trim(spill/1000,2)
+def _render_value_summary(container, label: str, value_mwh: float, suffix: str | None = None):
     css = """
     <style>
-    .spill-wrap { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; padding-left: 8px;}
-    .spill-line  { font-size: 18px; display: flex; justify-content: space-between; width: 260px; }
+    .pv-summary-wrap { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; padding-left: 8px;}
+    .pv-summary-line  { font-size: 18px; display: flex; justify-content: space-between; width: 260px; }
     </style>
     """
+    value_text = f"{_fmt_summary_mwh(value_mwh)} MWh"
+    if suffix:
+        value_text = f"{value_text} {suffix}"
     html = f"""
     {css}
-    <div class="spill-wrap">
-      <div class="spill-line"><span>PV Spill</span><span>{val} MWh</span></div>
+    <div class="pv-summary-wrap">
+      <div class="pv-summary-line"><span>{label}</span><span>{value_text}</span></div>
     </div>
     """
     container.markdown(html, unsafe_allow_html=True)
+
+
+def render_spill_summary(container, period_df: pd.DataFrame | None):
+    if period_df is None or "pv_spill_kWh" not in period_df:
+        return
+    spill = float(period_df["pv_spill_kWh"].sum())
+    harvest_total = float(period_df["harvest_kWh"].sum()) if "harvest_kWh" in period_df else 0.0
+    suffix = None
+    if harvest_total > 0:
+        spill_pct = (spill / harvest_total) * 100.0
+        suffix = f"{spill_pct:.0f}%"
+    _render_value_summary(container, "PV Spill", spill / 1000.0, suffix=suffix)
+
+
+def render_harvest_summary(container, period_df: pd.DataFrame | None):
+    if period_df is None or "harvest_kWh" not in period_df:
+        return
+    harvest_total = float(period_df["harvest_kWh"].sum())
+    _render_value_summary(container, "Harvest", harvest_total / 1000.0)
+
+
+def _peak_mask(timestamps: pd.Series) -> np.ndarray:
+    hours = pd.to_datetime(timestamps).dt.hour.to_numpy(dtype=int)
+    return (hours >= 18) & (hours < 22)
+
+
+def compute_cost_comparison(
+    cost_df: pd.DataFrame,
+    ts_col: str,
+    *,
+    pricing_mode: str,
+    flat_price: float,
+    peak_price: float,
+    offpeak_price: float,
+    pv_discount_pct: float,
+    ess_discount_pct: float,
+    pv_override: float | None,
+    ess_override: float | None,
+) -> pd.DataFrame | None:
+    if cost_df is None or cost_df.empty:
+        return None
+    required = ["load_kWh", "harvest_used_kWh", "batt_discharge_kWh"]
+    for col in required:
+        if col not in cost_df.columns:
+            return None
+    df = cost_df[[ts_col] + required].copy()
+    df[ts_col] = pd.to_datetime(df[ts_col])
+    df = df.sort_values(ts_col)
+    load = df["load_kWh"].to_numpy(dtype=float)
+    pv_direct = df["harvest_used_kWh"].to_numpy(dtype=float)
+    ess_used = df["batt_discharge_kWh"].to_numpy(dtype=float)
+    if load.size == 0:
+        return None
+    pv_discount = max(0.0, min(100.0, pv_discount_pct)) / 100.0
+    ess_discount = max(0.0, min(100.0, ess_discount_pct)) / 100.0
+
+    if pricing_mode == "Flat Price":
+        base_rate = np.full(load.shape, max(flat_price, 0.0), dtype=float)
+    else:
+        peak_mask = _peak_mask(df[ts_col])
+        peak_vals = np.where(peak_mask, max(peak_price, 0.0), max(offpeak_price, 0.0))
+        base_rate = peak_vals.astype(float)
+
+    baseline_step = load * base_rate
+    grid_portion = np.clip(load - pv_direct - ess_used, 0.0, None)
+
+    def _override_or_discount(override_value: float | None, discount: float) -> np.ndarray:
+        if override_value is not None and override_value > 0:
+            return np.full(load.shape, override_value, dtype=float)
+        return base_rate * (1.0 - discount)
+
+    pv_rate = _override_or_discount(pv_override, pv_discount)
+    ess_rate = _override_or_discount(ess_override, ess_discount)
+    pv_rate = np.clip(pv_rate, 0.0, None)
+    ess_rate = np.clip(ess_rate, 0.0, None)
+
+    pv_cost = pv_direct * pv_rate
+    ess_cost = ess_used * ess_rate
+    grid_cost = grid_portion * base_rate
+    hybrid_step = pv_cost + ess_cost + grid_cost
+
+    result = pd.DataFrame({
+        ts_col: df[ts_col],
+        "grid_cost": baseline_step,
+        "pv_ess_cost": hybrid_step,
+    })
+    return result
+
+
+
+def render_energy_cost_section(cost_df: pd.DataFrame | None, ts_col: str):
+    if cost_df is None or cost_df.empty:
+        st.info("No data available for the selected timeframe.")
+        return
+
+    pricing_defaults = st.session_state.setdefault("pricing_inputs", {
+        "mode": "Peak / Off-Peak",
+        "detail": "Simple",
+        "flat_price": 1200.0,
+        "peak_price": 1500.0,
+        "offpeak_price": 1000.0,
+        "pv_discount": 15.0,
+        "ess_discount": 20.0,
+        "pv_price": 800.0,
+        "ess_price": 900.0,
+    })
+    pricing_mode = pricing_defaults.get("mode", "Peak / Off-Peak")
+    detail_mode = pricing_defaults.get("detail", "Simple")
+    flat_price = float(pricing_defaults.get("flat_price", 1200.0))
+    peak_price = float(pricing_defaults.get("peak_price", 1500.0))
+    offpeak_price = float(pricing_defaults.get("offpeak_price", 1000.0))
+    if pricing_mode == "Flat Price":
+        peak_price = offpeak_price = flat_price
+    pv_discount = float(pricing_defaults.get("pv_discount", 15.0))
+    ess_discount = float(pricing_defaults.get("ess_discount", 20.0))
+    pv_override = float(pricing_defaults.get("pv_price", 800.0)) if detail_mode == "Advanced" else None
+    ess_override = float(pricing_defaults.get("ess_price", 900.0)) if detail_mode == "Advanced" else None
+
+    chart_col, summary_col = st.columns([4, 1], gap="large")
+    summary_box = summary_col.container()
+
+    cost_series = compute_cost_comparison(
+        cost_df,
+        ts_col,
+        pricing_mode=pricing_mode,
+        flat_price=flat_price,
+        peak_price=peak_price,
+        offpeak_price=offpeak_price,
+        pv_discount_pct=pv_discount,
+        ess_discount_pct=ess_discount,
+        pv_override=pv_override,
+        ess_override=ess_override,
+    )
+
+    if cost_series is None or cost_series.empty:
+        st.info("Unable to compute cost comparison for the selected period.")
+        return
+
+    pv_cost = float(cost_series["pv_ess_cost"].sum())
+    grid_cost = float(cost_series["grid_cost"].sum())
+    savings = grid_cost - pv_cost
+    savings_pct = (savings / grid_cost * 100) if grid_cost > 0 else 0.0
+
+    with summary_box:
+        st.metric("Savings", f"IDR {_fmt_comma(savings, 0)}", f"{savings_pct:.1f}%")
+        st.metric("PV + ESS Cost", f"IDR {_fmt_comma(pv_cost, 0)}")
+        st.metric("Grid Only Cost", f"IDR {_fmt_comma(grid_cost, 0)}")
+
+    is_week = (st.session_state.timeframe == "Week")
+    timeframe = st.session_state.timeframe
+    hover = "IDR %{y:,.0f}<br>%{x|%d %b %Y %H:%M}<extra></extra>"
+
+    def render_cost_chart(series_df: pd.DataFrame, *, cumulative: bool = False, show_night: bool = False):
+        chart = go.Figure()
+        data = series_df.copy()
+        if cumulative and timeframe in ("Day", "Week"):
+            data["grid_cost"] = data["grid_cost"].cumsum()
+            data["pv_ess_cost"] = data["pv_ess_cost"].cumsum()
+
+        def add_bar_trace(x_vals, y_vals, name, color):
+            chart.add_trace(go.Bar(
+                x=x_vals,
+                y=y_vals,
+                name=name,
+                marker_color=color,
+                width=BAR_WIDTH,
+                opacity=0.7,
+                hovertemplate="IDR %{y:,.0f}<br>%{x}<extra></extra>"
+            ))
+
+        if timeframe in ("Day", "Week"):
+            hover_tpl = hover if not cumulative else "IDR %{y:,.0f}<br>%{x|%d %b %Y %H:%M}<extra></extra>"
+            if show_night:
+                ts_vals = pd.to_datetime(data[ts_col])
+                hours = ts_vals.dt.hour
+                night_mask = (hours < 6) | (hours >= 18)
+                current_start = None
+                for idx, is_night in enumerate(night_mask):
+                    if is_night and current_start is None:
+                        current_start = ts_vals.iloc[idx]
+                    elif not is_night and current_start is not None:
+                        chart.add_vrect(
+                            x0=current_start,
+                            x1=ts_vals.iloc[idx-1],
+                            fillcolor="rgba(80,80,80,0.12)",
+                            line_width=0,
+                            layer="below"
+                        )
+                        current_start = None
+                if current_start is not None:
+                    chart.add_vrect(
+                        x0=current_start,
+                        x1=ts_vals.iloc[-1],
+                        fillcolor="rgba(80,80,80,0.12)",
+                        line_width=0,
+                        layer="below"
+                    )
+            chart.add_trace(go.Scatter(
+                x=data[ts_col],
+                y=data["grid_cost"],
+                mode="lines",
+                name="Grid Only",
+                line=dict(color=COLOR_CHART_BLACK, width=3),
+                hovertemplate=hover_tpl
+            ))
+            chart.add_trace(go.Scatter(
+                x=data[ts_col],
+                y=data["pv_ess_cost"],
+                mode="lines",
+                name="PV + ESS",
+                line=dict(color=COLOR_PV, width=3),
+                hovertemplate=hover_tpl
+            ))
+        elif timeframe == "Month":
+            data["_day"] = pd.to_datetime(data[ts_col]).dt.floor("D")
+            grouped = data.groupby("_day")[["grid_cost", "pv_ess_cost"]].sum().reset_index()
+            if cumulative:
+                grouped["grid_cost"] = grouped["grid_cost"].cumsum()
+                grouped["pv_ess_cost"] = grouped["pv_ess_cost"].cumsum()
+            labels = grouped["_day"].dt.strftime("%d %b (%a)")
+            add_bar_trace(labels, grouped["grid_cost"], "Grid Only", COLOR_CHART_BLACK)
+            add_bar_trace(labels, grouped["pv_ess_cost"], "PV + ESS", COLOR_PV)
+        else:  # Year
+            data["_month"] = pd.to_datetime(data[ts_col]).dt.to_period("M").dt.to_timestamp()
+            grouped = data.groupby("_month")[["grid_cost", "pv_ess_cost"]].sum().reset_index()
+            if cumulative:
+                grouped["grid_cost"] = grouped["grid_cost"].cumsum()
+                grouped["pv_ess_cost"] = grouped["pv_ess_cost"].cumsum()
+            labels = grouped["_month"].dt.strftime("%b %Y")
+            add_bar_trace(labels, grouped["grid_cost"], "Grid Only", COLOR_CHART_BLACK)
+            add_bar_trace(labels, grouped["pv_ess_cost"], "PV + ESS", COLOR_PV)
+
+        barmode = "overlay" if timeframe in ("Month", "Year") else None
+        chart.update_layout(
+            height=BASE_HEIGHT * 2,
+            margin=dict(l=0, r=10, t=30, b=30),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+            yaxis=dict(showticklabels=False, title=None),
+            xaxis=dict(showticklabels=False),
+            barmode=barmode,
+        )
+        chart.update_yaxes(showgrid=True, gridcolor="#eee")
+        return chart
+
+    show_night = bool(st.session_state.get("energy_show_night_week", False))
+    if st.session_state.timeframe == "Day":
+        show_night = bool(st.session_state.get("energy_show_night_day", False))
+
+    cost_fig = render_cost_chart(cost_series, cumulative=False, show_night=show_night)
+    with chart_col:
+        st.plotly_chart(cost_fig, use_container_width=True, config={"displayModeBar": True})
+
+    if timeframe in ("Day", "Week", "Month", "Year"):
+        cum_fig = render_cost_chart(cost_series, cumulative=True, show_night=False)
+        with chart_col:
+            st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+            st.plotly_chart(cum_fig, use_container_width=True, config={"displayModeBar": True})
 
 
 def _fmt_comma(val: float, decimals: int = 0, unit: str = "") -> str:
@@ -1635,7 +2195,7 @@ def render_finance_view(sim_all: pd.DataFrame, pv_inputs: dict):
     })
 
     monthly = (
-        sim_all.groupby(["year", "month"])[["harvest_used_kWh", "batt_discharge_kWh"]]
+        sim_all.groupby(["year", "month"])[["harvest_used_kWh", "batt_discharge_kWh", "load_kWh"]]
         .sum()
         .reset_index()
         .sort_values(["year", "month"])
@@ -1662,11 +2222,330 @@ def render_finance_view(sim_all: pd.DataFrame, pv_inputs: dict):
     if finance_defaults["ess_month"] not in month_options:
         finance_defaults["ess_month"] = month_options[0]
 
+    label_map = dict(zip(monthly["label"], zip(monthly["year"], monthly["month"])))
+    pv_data_source = st.session_state.get("pv_data_source_selection", NASA_SOURCE)
+
     def month_value(label: str, column: str) -> float:
         row = monthly[monthly["label"] == label]
         if row.empty:
             return 0.0
         return float(row[column].iloc[0])
+
+    def reference_values(label: str) -> tuple[float, float, float, float]:
+        if label == "Avg Month":
+            if monthly.empty:
+                return 0.0, 0.0, 0.0, 0.0
+            return (
+                float(monthly["load_kWh"].mean()),
+                float(monthly["harvest_used_kWh"].mean()),
+                float(monthly["batt_discharge_kWh"].mean()),
+                float(monthly["days_present"].mean()),
+            )
+        row = monthly[monthly["label"] == label]
+        if row.empty:
+            return 0.0, 0.0, 0.0, 0.0
+        return (
+            float(row["load_kWh"].iloc[0]),
+            float(row["harvest_used_kWh"].iloc[0]),
+            float(row["batt_discharge_kWh"].iloc[0]),
+            float(row["days_present"].iloc[0]),
+        )
+
+    savings_state = st.session_state.setdefault(
+        "finance_savings",
+        {
+            "price_idr": 1500.0,
+            "reference": "Avg Month",
+            "options": [
+                {"pct": 20.0},
+                {"pct": 40.0},
+                {"pct": 60.0},
+            ],
+        },
+    )
+    while len(savings_state["options"]) < 3:
+        savings_state["options"].append({"pct": 20.0})
+
+    st.subheader("Savings Targets")
+    with st.expander("Calculation Model", expanded=True):
+        calc_mode = st.radio(
+            "Calculation Mode",
+            ["Simple", "Advanced"],
+            horizontal=True,
+            key="finance_calc_mode"
+        )
+    price_col, ref_col, system_col = st.columns([1, 1, 1], gap="small")
+    with price_col:
+        savings_state["price_idr"] = st.number_input(
+            "Electricity Price (IDR/kWh)",
+            min_value=0.0,
+            value=float(savings_state["price_idr"]),
+            step=100.0,
+            format="%g",
+            key="finance_savings_price",
+        )
+    reference_choices = ["Avg Month"] + month_options
+    if savings_state["reference"] not in reference_choices:
+        savings_state["reference"] = reference_choices[0]
+    prev_reference = savings_state.get("last_reference", savings_state["reference"])
+    with ref_col:
+        savings_state["reference"] = st.selectbox(
+            "Reference Month",
+            reference_choices,
+            index=reference_choices.index(savings_state["reference"]),
+            key="finance_savings_reference",
+        )
+        ref_load_tmp, _, _, _ = reference_values(savings_state["reference"])
+        if ref_load_tmp > 0:
+            estimated_bill = ref_load_tmp * savings_state["price_idr"]
+            st.caption(f"Monthly bill estimate: {_fmt_comma(estimated_bill, 0)} IDR")
+    reference_changed = savings_state["reference"] != prev_reference
+    savings_state["last_reference"] = savings_state["reference"]
+    system_choices = ["PV", "PV + ESS"]
+    if savings_state.get("system") not in system_choices:
+        savings_state["system"] = "PV + ESS"
+    ref_load, ref_pv_energy, ref_ess_energy, ref_days = reference_values(savings_state["reference"])
+    ts_col = detect_ts_column(sim_all)
+    irr_col = IRRADIANCE_COL if IRRADIANCE_COL in sim_all.columns else None
+    sunrise_time = pv_inputs.get("sunrise", time(6, 0))
+    sunset_time = pv_inputs.get("sunset", time(18, 0))
+
+    def daylight_ratio_pct(label: str) -> float:
+        df = sim_all[[ts_col, "load_kWh"]].copy()
+        df["_ts"] = pd.to_datetime(df[ts_col])
+        if label != "Avg Month" and label in label_map:
+            year, month = label_map[label]
+            df = df[(df["_ts"].dt.year == year) & (df["_ts"].dt.month == month)]
+        if df.empty:
+            return 0.0
+        load_total = float(df["load_kWh"].sum())
+        if load_total <= 0:
+            return 0.0
+        if pv_data_source == NASA_SOURCE and irr_col is not None:
+            irr = sim_all.loc[df.index, irr_col]
+            day_mask = irr > 0
+        else:
+            hours = df["_ts"].dt.hour + df["_ts"].dt.minute / 60.0 + df["_ts"].dt.second / 3600.0
+            sunrise_hr = sunrise_time.hour + sunrise_time.minute / 60.0 + sunrise_time.second / 3600.0
+            sunset_hr = sunset_time.hour + sunset_time.minute / 60.0 + sunset_time.second / 3600.0
+            if sunrise_hr >= sunset_hr:
+                day_mask = (hours >= sunrise_hr) | (hours < sunset_hr)
+            else:
+                day_mask = (hours >= sunrise_hr) & (hours < sunset_hr)
+        load_day = float(df.loc[day_mask, "load_kWh"].sum())
+        return 0.0 if load_day <= 0 else (load_day / load_total) * 100.0
+
+    pv_only_max_pct = daylight_ratio_pct(savings_state["reference"])
+    prev_system = savings_state.get("last_system", savings_state["system"])
+    with system_col:
+        savings_state["system"] = st.selectbox(
+            "System",
+            system_choices,
+            index=system_choices.index(savings_state["system"]),
+            key="finance_savings_system",
+        )
+        if savings_state["system"] == "PV" and ref_load > 0:
+            st.caption(f"Max achievable savings with PV-only: {pv_only_max_pct:.0f}%")
+        else:
+            st.caption("&nbsp;", unsafe_allow_html=True)
+    system_changed = savings_state["system"] != prev_system
+    savings_state["last_system"] = savings_state["system"]
+    prev_mode = savings_state.get("last_calc_mode", "Simple")
+    if reference_changed or system_changed or prev_mode != calc_mode:
+        for opt in savings_state["options"]:
+            opt["computed_state"] = None
+    savings_state["last_calc_mode"] = calc_mode
+    def pv_energy_per_kwp(label: str, days_count: float) -> float:
+        if pv_data_source == NASA_SOURCE:
+            aligned = st.session_state.get("nasa_harvest_aligned")
+            ts_col_aligned = st.session_state.get("nasa_aligned_ts_col")
+            pr_val = float(st.session_state.get("nasa_fetch", {}).get("pr_pct", 80.0)) / 100.0
+            if aligned is None or ts_col_aligned is None:
+                return 0.0
+            df = aligned.copy()
+            df["_ts"] = pd.to_datetime(df[ts_col_aligned])
+            if label != "Avg Month" and label in label_map:
+                year, month = label_map[label]
+                df = df[(df["_ts"].dt.year == year) & (df["_ts"].dt.month == month)]
+            if df.empty:
+                return 0.0
+            return float(df["harvest_kWh_base"].sum()) * pr_val
+        else:
+            pv_hr = max(float(pv_inputs.get("pv_hr", 0.0)), 0.0)
+            return pv_hr * max(days_count, 1.0)
+
+    if ref_load <= 0:
+        st.info("Reference month has no load data. Savings calculator disabled.")
+    else:
+        per_pv_energy = pv_energy_per_kwp(savings_state["reference"], ref_days)
+        daylight_fraction = pv_only_max_pct / 100.0
+        daylight_energy_cap = ref_load * daylight_fraction
+
+        def simple_savings_target(pct: float, *, extended: bool = False) -> tuple[bool, dict[str, float] | str]:
+            if pct <= 0:
+                return False, "Target % must be positive."
+            if pct > 100:
+                return False, "Savings target cannot exceed 100% of the monthly bill."
+            if savings_state["system"] == "PV" and pct > pv_only_max_pct + 0.5:
+                return False, f"PV-only system can save at most {pv_only_max_pct:.0f}% for this month."
+            target_energy = ref_load * (pct / 100.0)
+            if per_pv_energy <= 0:
+                return False, "Reference month has no PV energy to scale from."
+            pv_kwp = target_energy / per_pv_energy
+            if savings_state["system"] == "PV":
+                ess_mwh = None
+            else:
+                ess_energy_month = max(0.0, target_energy - min(target_energy, daylight_energy_cap))
+                ess_mwh = (ess_energy_month / max(ref_days, 1.0)) / 1000.0 if ess_energy_month > 0 else 0.0
+            pcs_kw = pv_kwp
+            savings_idr = target_energy * savings_state["price_idr"]
+            result = {
+                "pv_kwp": pv_kwp,
+                "ess_mwh": ess_mwh,
+                "pcs_kw": pcs_kw,
+                "savings_idr": savings_idr,
+                "target_energy": target_energy,
+            }
+            if extended:
+                result["per_pv_energy"] = per_pv_energy
+                result["daylight_energy_cap"] = daylight_energy_cap
+            return True, result
+
+        def advanced_savings_target(pct: float) -> tuple[bool, dict[str, float] | str]:
+            overview_df = st.session_state.get("finance_overview_df")
+            base_ts = st.session_state.get("finance_ts_col")
+            if overview_df is None or base_ts is None:
+                return False, "Run a simulation first before using Advanced mode."
+            simple_ok, base_plan = simple_savings_target(pct, extended=True)
+            if not simple_ok:
+                return simple_ok, base_plan
+            harvest_series = st.session_state.get("nasa_harvest_series")
+            pr_val = float(st.session_state.get("nasa_fetch", {}).get("pr_pct", 80.0)) / 100.0
+            target_fraction = pct / 100.0
+            pv_candidate = max(base_plan["pv_kwp"], 1.0)
+            if savings_state["system"] == "PV + ESS":
+                ess_candidate = base_plan["ess_mwh"] if base_plan["ess_mwh"] not in (None, 0.0) else 0.1
+            else:
+                ess_candidate = 0.0
+            pcs_candidate = max(base_plan["pcs_kw"], pv_candidate)
+
+            def run_once(pv_kwp: float, ess_mwh: float) -> float:
+                inp = Inputs(
+                    pv_kwp=pv_kwp,
+                    pv_hr=float(pv_inputs["pv_hr"]),
+                    sunrise_h=to_hour_float(pv_inputs["sunrise"]),
+                    sunset_h=to_hour_float(pv_inputs["sunset"]),
+                    batt_mwh=ess_mwh if savings_state["system"] == "PV + ESS" else 0.0,
+                    soc_max_pct=int(pv_inputs["soc_max_pct"]),
+                    soc_min_pct=int(pv_inputs["soc_min_pct"]),
+                    init_soc_pct=int(pv_inputs["init_soc_pct"]),
+                    rt_eff=float(pv_inputs["rt_eff_pct"]) / 100.0,
+                )
+                override = None
+                if pv_data_source == NASA_SOURCE and harvest_series is not None:
+                    override = pv_kwp * pr_val * harvest_series
+                sim_df, _ = simulate_dispatch(overview_df, base_ts, inp, harvest_override=override)
+                load_total = float(sim_df["load_kWh"].sum())
+                clean = float(sim_df["harvest_used_kWh"].sum() + sim_df["batt_discharge_kWh"].sum())
+                return clean / load_total if load_total > 0 else 0.0
+
+            best = None
+            with st.spinner("Running advanced solver..."):
+                for _ in range(8):
+                    achieved = run_once(pv_candidate, ess_candidate)
+                    best = (pv_candidate, ess_candidate, achieved)
+                    if achieved >= target_fraction - 0.01:
+                        break
+                    scale = target_fraction / max(achieved, 1e-3)
+                    scale = min(max(scale, 1.05), 1.8)
+                    pv_candidate *= scale
+                    if savings_state["system"] == "PV + ESS":
+                        ess_candidate = max(ess_candidate * scale, 0.1)
+            if best is None:
+                return False, "Unable to evaluate advanced solver."
+            pv_final, ess_final, achieved = best
+            result = {
+                "pv_kwp": pv_final,
+                "ess_mwh": ess_final if savings_state["system"] == "PV + ESS" else None,
+                "pcs_kw": max(pv_final, pcs_candidate),
+                "savings_idr": ref_load * achieved * savings_state["price_idr"],
+                "achieved_pct": achieved * 100.0,
+            }
+            return True, result
+
+        pv_sidebar_defaults = st.session_state.get("pv_sidebar_defaults", {})
+
+        for idx, option in enumerate(savings_state["options"]):
+            option.setdefault("computed_state", None)
+            option.setdefault("achieved_pct", None)
+            cols = st.columns([1.2, 0.8, 1.1, 1.1, 1.1, 0.8, 0.9], vertical_alignment="bottom")
+            with cols[0]:
+                option["pct"] = st.number_input(
+                    f"Target {idx+1} (%)",
+                    min_value=0.0,
+                    value=float(option.get("pct", 0.0)),
+                    step=5.0,
+                    format="%.0f",
+                    key=f"finance_savings_pct_{idx}",
+                )
+            with cols[1]:
+                st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+                calc_state = (calc_mode, option["pct"])
+                calc_disabled = option.get("computed_state") == calc_state
+                calc_clicked = st.button("Calculate", key=f"finance_savings_calc_{idx}", disabled=calc_disabled)
+                if calc_clicked:
+                    if calc_mode == "Advanced":
+                        ok, result = advanced_savings_target(option["pct"])
+                    else:
+                        ok, result = simple_savings_target(option["pct"])
+                    if ok:
+                        option.update(result)
+                        option["computed_state"] = calc_state
+                        option["achieved_pct"] = result.get("achieved_pct") if calc_mode == "Advanced" else None
+                        option["error"] = ""
+                    else:
+                        option["error"] = result
+                    st.rerun()
+            pv_val = option.get("pv_kwp")
+            ess_val = option.get("ess_mwh")
+            pcs_val = option.get("pcs_kw")
+            save_val = option.get("savings_idr")
+            with cols[2]:
+                st.write("")
+                pv_display = _fmt_trim(round(pv_val), 0) if pv_val else "—"
+                st.markdown(f"PV (kWp)<br><b>{pv_display}</b>", unsafe_allow_html=True)
+            with cols[3]:
+                st.write("")
+                ess_color = "#9ea3b0" if savings_state["system"] == "PV" else COLOR_BATT
+                if savings_state["system"] == "PV + ESS" and ess_val is not None:
+                    ess_display = _fmt_trim(round(ess_val * 1000.0), 0)
+                else:
+                    ess_display = "—"
+                st.markdown(f"ESS (kWh)<br><b><span style='color:{ess_color};'>{ess_display}</span></b>", unsafe_allow_html=True)
+            with cols[4]:
+                st.write("")
+                pcs_display = _fmt_trim(round(pcs_val), 0) if pcs_val else "—"
+                st.markdown(f"PCS (kW)<br><b>{pcs_display}</b>", unsafe_allow_html=True)
+            with cols[5]:
+                st.write("")
+                st.markdown(f"Savings (IDR)<br><b>{_fmt_comma(save_val,0) if save_val else '—'}</b>", unsafe_allow_html=True)
+                if calc_mode == "Advanced" and option.get("achieved_pct") is not None:
+                    st.caption(f"Achieved: {option['achieved_pct']:.1f}%")
+            if option.get("error"):
+                st.caption(f":warning: {option['error']}")
+            use_disabled = not (pv_val and pcs_val)
+            with cols[6]:
+                st.write("")
+                if st.button("Use Output", key=f"finance_savings_use_{idx}", disabled=use_disabled):
+                    if not use_disabled:
+                        st.session_state["finance_apply_output"] = {
+                            "pv_kwp": round(pv_val),
+                            "ess_mwh": round(ess_val, 3) if ess_val is not None else None,
+                            "pcs_kw": round(pcs_val),
+                        }
+                        st.rerun()
+
+    st.session_state["finance_savings"] = savings_state
 
     st.subheader("Investment Cost")
     inv_inputs, inv_table = st.columns([1, 2])
@@ -1797,6 +2676,8 @@ def run_pv_mode(load_file, harvest_file, data_source, pv_inputs):
     overview_raw = read_overview_from_excel(load_file["data"])
     ts_col = detect_ts_column(overview_raw)
     overview = add_calendar_columns(overview_raw, ts_col)
+    st.session_state["finance_overview_df"] = overview
+    st.session_state["finance_ts_col"] = ts_col
     if IRRADIANCE_COL in overview.columns:
         overview = overview.drop(columns=[IRRADIANCE_COL])
     harvest_override = None
@@ -1890,6 +2771,15 @@ def run_pv_mode(load_file, harvest_file, data_source, pv_inputs):
             pr = float(nasa_defaults.get("pr_pct", 80.0)) / 100.0
             harvest_override = (float(pv_inputs["pv_kwp"]) * pr * harvest_kwh).to_numpy(dtype=float)
             overview[IRRADIANCE_COL] = irradiance_vals.to_numpy(dtype=float)
+            aligned_nasa = align_df[[ts_col]].copy()
+            aligned_nasa["harvest_kWh_base"] = harvest_kwh
+            st.session_state["nasa_harvest_aligned"] = aligned_nasa
+            st.session_state["nasa_aligned_ts_col"] = ts_col
+            st.session_state["nasa_harvest_series"] = harvest_kwh.to_numpy(dtype=float)
+    else:
+        st.session_state["nasa_harvest_aligned"] = None
+        st.session_state["nasa_aligned_ts_col"] = None
+        st.session_state["nasa_harvest_series"] = None
     inp = Inputs(
         pv_kwp=float(pv_inputs["pv_kwp"]),
         pv_hr=float(pv_inputs["pv_hr"]),
@@ -1903,10 +2793,13 @@ def run_pv_mode(load_file, harvest_file, data_source, pv_inputs):
     )
 
     sim_all, _ = simulate_dispatch(overview, ts_col, inp, harvest_override=harvest_override)
+    st.session_state["sim_run_pv_kwp"] = inp.pv_kwp
+    st.session_state["sim_run_ess_mwh"] = inp.batt_mwh
 
     weeks = week_list(sim_all)
     months = month_list(sim_all)
     years = year_list(sim_all)
+    days = day_list(sim_all, ts_col)
     if not weeks:
         st.warning("No week data found in 'Overview'.")
         st.stop()
@@ -1914,6 +2807,8 @@ def run_pv_mode(load_file, harvest_file, data_source, pv_inputs):
         st.warning("No year data found in 'Overview'.")
         st.stop()
 
+    if "day_idx" not in st.session_state:
+        st.session_state.day_idx = 0
     if "week_idx" not in st.session_state:
         st.session_state.week_idx = 0
     if "month_idx" not in st.session_state:
@@ -1922,11 +2817,16 @@ def run_pv_mode(load_file, harvest_file, data_source, pv_inputs):
         st.session_state.timeframe = "Week"
     if "year_idx" not in st.session_state:
         st.session_state.year_idx = 0
-    VIEW_OPTIONS = ["Overview", "Energy Chart", "Finance"]
+    VIEW_OPTIONS = ["Overview", "Energy Chart", "Energy Cost Comparison", "Finance"]
     if "view_mode" not in st.session_state:
         st.session_state.view_mode = VIEW_OPTIONS[0]
 
-    timeframe_options = ["Week", "Month", "Year"]
+    timeframe_options = ["Day", "Week", "Month", "Year"]
+    if days:
+        st.session_state.day_idx = min(st.session_state.day_idx, len(days)-1)
+    else:
+        st.session_state.day_idx = 0
+    day_options = [datetime.combine(d, time()).strftime("%d %b %Y") for d in days]
     week_options = [f"W{w} ({y})" for y, w in weeks]
     month_options = [datetime(y, m, 1).strftime("%b %Y") for y, m in months]
     year_options = [str(y) for y in years]
@@ -1943,6 +2843,12 @@ def run_pv_mode(load_file, harvest_file, data_source, pv_inputs):
         st.rerun()
 
     view_mode = st.session_state.view_mode
+    energy_week_show_night = bool(st.session_state.get("energy_show_night_week", False))
+    energy_day_show_night = bool(st.session_state.get("energy_show_night_day", False))
+    overview_timeframes = ["Week", "Month", "Year"]
+    if "overview_timeframe" not in st.session_state:
+        st.session_state["overview_timeframe"] = "Week"
+
     if view_mode == "Overview":
         is_nasa_source = data_source == NASA_SOURCE
         data_options = ["Summary", "Load", "Irradiance"]
@@ -1962,17 +2868,26 @@ def run_pv_mode(load_file, harvest_file, data_source, pv_inputs):
                 format_func=lambda opt: f"{opt} (NASA only)" if (opt == "Irradiance" and not is_nasa_source) else opt,
                 key=data_key
             )
+        with period_col:
+            overview_tf = st.selectbox(
+                "Timeframe",
+                overview_timeframes,
+                index=overview_timeframes.index(st.session_state["overview_timeframe"]),
+                key="overview_timeframe_select"
+            )
+            if overview_tf != st.session_state["overview_timeframe"]:
+                st.session_state["overview_timeframe"] = overview_tf
+                st.rerun()
         if data_selected == "Irradiance" and not is_nasa_source:
             st.info("Irradiance view is available only when NASA GHI data is selected.")
             st.session_state[data_key] = "Summary"
             st.session_state.pv_overview_data_mode = "Summary"
             st.rerun()
         st.session_state.pv_overview_data_mode = data_selected
-        period_col.empty()
-        render_pv_overview(sim_all, ts_col, weeks, data_selected, is_nasa_source)
+        render_pv_overview(sim_all, ts_col, weeks, data_selected, is_nasa_source, timeframe=st.session_state["overview_timeframe"])
         return
 
-    if view_mode == "Energy Chart":
+    if view_mode in ("Energy Chart", "Energy Cost Comparison"):
         with tf_col:
             timeframe_selected = st.selectbox(
                 "Timeframe",
@@ -1981,11 +2896,24 @@ def run_pv_mode(load_file, harvest_file, data_source, pv_inputs):
             )
 
         if timeframe_selected != st.session_state.timeframe:
-            st.session_state.timeframe = timeframe_selected
-            st.rerun()
+                st.session_state.timeframe = timeframe_selected
+                st.rerun()
 
         with period_col:
-            if st.session_state.timeframe == "Week":
+            if st.session_state.timeframe == "Day":
+                if not day_options:
+                    st.warning("No day data found in 'Overview'.")
+                    st.stop()
+                day_label = st.selectbox(
+                    "Choose day",
+                    day_options,
+                    index=int(st.session_state.day_idx)
+                )
+                sel_idx = day_options.index(day_label)
+                if sel_idx != st.session_state.day_idx:
+                    st.session_state.day_idx = sel_idx
+                    st.rerun()
+            elif st.session_state.timeframe == "Week":
                 selected = st.selectbox(
                     "Choose week",
                     week_options,
@@ -2023,6 +2951,7 @@ def run_pv_mode(load_file, harvest_file, data_source, pv_inputs):
                     st.rerun()
             else:
                 st.selectbox("Choose period", ["Coming soon"], index=0)
+
     else:
         tf_col.empty()
         period_col.empty()
@@ -2032,11 +2961,50 @@ def run_pv_mode(load_file, harvest_file, data_source, pv_inputs):
         return
 
     period_full: pd.DataFrame | None = None
+    cost_df: pd.DataFrame | None = None
     avg_day_mwh: float | None = None
-    energy_week_show_night = bool(st.session_state.get("energy_show_night_week", False))
     week_avg_hr: float | None = None
+    energy_show_night = False
 
-    if st.session_state.timeframe == "Week":
+    if st.session_state.timeframe == "Day":
+        prev_clicked, next_clicked = nav_buttons(
+            "nav_day",
+            "◀ Prev day",
+            "Next day ▶",
+            st.session_state.day_idx <= 0,
+            st.session_state.day_idx >= len(days)-1,
+        )
+        if prev_clicked:
+            st.session_state.day_idx = max(0, st.session_state.day_idx - 1)
+            st.rerun()
+        if next_clicked:
+            st.session_state.day_idx = min(len(days)-1, st.session_state.day_idx + 1)
+            st.rerun()
+
+        capacity = max(float(pv_inputs["pv_kwp"]), 1e-6)
+        energy_day_show_night = st.toggle(
+            "Show Night",
+            value=energy_day_show_night,
+            key="energy_show_night_day"
+        )
+        energy_show_night = energy_day_show_night
+
+        day_selected = days[st.session_state.day_idx]
+        full_index = build_day_index(day_selected)
+        mask = pd.to_datetime(sim_all[ts_col]).dt.date == day_selected
+        day_df = sim_all[mask].copy()
+        day_df = day_df.set_index(pd.to_datetime(day_df[ts_col])).sort_index()
+
+        day_full = pd.DataFrame(index=full_index)
+        for col in VALUE_COLS:
+            day_full[col] = day_df[col].reindex(full_index).fillna(0.0)
+        if IRRADIANCE_COL in day_df.columns:
+            day_full[IRRADIANCE_COL] = day_df[IRRADIANCE_COL].reindex(full_index).fillna(0.0)
+        day_full["soc_pct"] = day_df["soc_pct"].reindex(full_index).ffill().fillna(0.0)
+        day_full[ts_col] = day_full.index
+        period_full = day_full
+        cost_df = day_full
+    elif st.session_state.timeframe == "Week":
         prev_clicked, next_clicked = nav_buttons(
             "nav_week",
             "◀ Prev week",
@@ -2057,6 +3025,7 @@ def run_pv_mode(load_file, harvest_file, data_source, pv_inputs):
             value=energy_week_show_night,
             key="energy_show_night_week"
         )
+        energy_show_night = energy_week_show_night
 
         year_sel, week_sel = weeks[st.session_state.week_idx]
         full_index = build_week_index(year_sel, week_sel)
@@ -2071,6 +3040,7 @@ def run_pv_mode(load_file, harvest_file, data_source, pv_inputs):
         week_full["soc_pct"] = week_df["soc_pct"].reindex(full_index).ffill().fillna(0.0)
         week_full[ts_col] = week_full.index
         period_full = week_full
+        cost_df = week_full
     elif st.session_state.timeframe == "Month":
         prev_clicked, next_clicked = nav_buttons(
             "nav_month",
@@ -2099,6 +3069,7 @@ def run_pv_mode(load_file, harvest_file, data_source, pv_inputs):
         month_full["soc_pct"] = month_df["soc_pct"].reindex(full_index).ffill().fillna(0.0)
         month_full[ts_col] = month_full.index
         period_full = month_full
+        cost_df = month_full
         active_days = month_df.index.normalize().unique()
         if len(active_days) > 0:
             avg_day_mwh = (month_df["load_kWh"].sum() / 1000.0) / len(active_days)
@@ -2135,6 +3106,7 @@ def run_pv_mode(load_file, harvest_file, data_source, pv_inputs):
         if "days_present" in monthly.columns:
             period_cols.append("days_present")
         period_full = monthly[period_cols].copy()
+        cost_df = year_df
     else:
         st.info("Year view coming soon.")
         st.stop()
@@ -2187,23 +3159,29 @@ def run_pv_mode(load_file, harvest_file, data_source, pv_inputs):
             else:
                 hr_values = chart_df["harvest_kWh"].to_numpy(dtype=float) / capacity
             hover_mode = "year_hr"
+        is_week_tf = (st.session_state.timeframe == "Week")
+        is_day_tf = (st.session_state.timeframe == "Day")
         energy_fig = unified_energy_figure(
             chart_df,
             ts_col,
             ymax,
-            show_day_lines=(st.session_state.timeframe == "Week"),
-            show_day_labels=(st.session_state.timeframe == "Week"),
+            show_day_lines=is_week_tf,
+            show_day_labels=is_week_tf,
             hover_style=hover_mode,
             day_hr_map=day_hr_map,
             hr_values=hr_values,
             extra_hr=extra_hr,
-            show_night=(st.session_state.timeframe == "Week" and energy_week_show_night),
-            include_time=(st.session_state.timeframe == "Week")
+            show_night=energy_show_night,
+            include_time=(is_week_tf or is_day_tf)
         )
         st.plotly_chart(energy_fig, use_container_width=True, config={"displayModeBar": True})
     with right:
         render_week_summary(st, batt_mwh=float(pv_inputs["batt_mwh"]), pv_kwp=float(pv_inputs["pv_kwp"]),
                             week_df=period_full, avg_day_mwh=avg_day_mwh)
+
+    if view_mode == "Energy Cost Comparison":
+        render_energy_cost_section(cost_df, ts_col)
+        return
 
     if st.session_state.timeframe == "Month":
         day_ts = pd.to_datetime(chart_df[ts_col]).reset_index(drop=True)
@@ -2238,10 +3216,12 @@ def run_pv_mode(load_file, harvest_file, data_source, pv_inputs):
         with irr_col:
             st.plotly_chart(hr_fig, use_container_width=True, config={"displayModeBar": False})
         with irr_info:
+            render_harvest_summary(irr_info, period_full)
             avg_label = f"{avg_hr_month:.1f} HR" if valid_mask.any() else "—"
+            irr_info.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
             irr_info.markdown(
                 f"""
-                <div style="text-align:center;padding-top:12px;">
+                <div style="text-align:center;padding-top:4px;">
                     <div style="font-size:16px;font-weight:600;color:#555;">Avg HR</div>
                     <div style="font-size:30px;font-weight:700;color:{COLOR_PV};">{avg_label}</div>
                 </div>
@@ -2277,9 +3257,11 @@ def run_pv_mode(load_file, harvest_file, data_source, pv_inputs):
         )
         hr_fig.update_yaxes(showgrid=False, showticklabels=False)
         hr_fig.update_xaxes(showticklabels=False)
-        irr_col, _ = st.columns([4, 1], gap="large")
+        irr_col, irr_info = st.columns([4, 1], gap="large")
         with irr_col:
             st.plotly_chart(hr_fig, use_container_width=True, config={"displayModeBar": False})
+        with irr_info:
+            render_harvest_summary(irr_info, period_full)
     elif data_source == NASA_SOURCE:
         irr_ts = pd.to_datetime(chart_df[ts_col]).reset_index(drop=True)
         if IRRADIANCE_COL in chart_df.columns:
@@ -2350,23 +3332,24 @@ def run_pv_mode(load_file, harvest_file, data_source, pv_inputs):
         irr_col, irr_info = st.columns([4, 1], gap="large")
         with irr_col:
             st.plotly_chart(irradiance_fig, use_container_width=True, config={"displayModeBar": False})
-        if st.session_state.timeframe == "Week":
-            avg_label = "—"
-            if week_avg_hr is not None and week_avg_hr > 0:
-                avg_label = f"{week_avg_hr:.1f} HR"
-            irr_info.markdown(
-                f"""
-                <div style="text-align:center;margin-top:16px;display:flex;flex-direction:column;justify-content:center;height:100%;">
-                    <div style="font-size:16px;font-weight:600;color:#555;">Avg HR</div>
-                    <div style="font-size:30px;font-weight:700;color:{COLOR_PV};">{avg_label}</div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-        else:
-            irr_info.markdown("&nbsp;")
+        with irr_info:
+            render_harvest_summary(irr_info, period_full)
+            if st.session_state.timeframe == "Week":
+                avg_label = "—"
+                if week_avg_hr is not None and week_avg_hr > 0:
+                    avg_label = f"{week_avg_hr:.1f} HR"
+                st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+                st.markdown(
+                    f"""
+                    <div style="text-align:center;margin-top:4px;display:flex;flex-direction:column;justify-content:center;height:100%;">
+                        <div style="font-size:16px;font-weight:600;color:#555;">Avg HR</div>
+                        <div style="font-size:30px;font-weight:700;color:{COLOR_PV};">{avg_label}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
 
-    if st.session_state.timeframe == "Week":
+    if st.session_state.timeframe in ("Week", "Day"):
         left2, right2 = st.columns([4, 1], gap="large")
         with left2:
             soc_fig = soc_bar_figure(period_full, ts_col, soc_min=int(pv_inputs["soc_min_pct"]), soc_max=int(pv_inputs["soc_max_pct"]))
@@ -2385,7 +3368,7 @@ def run_pv_mode(load_file, harvest_file, data_source, pv_inputs):
         render_spill_summary(st, period_full)
 
     st.subheader("Export Data")
-    export_source = period_full if st.session_state.timeframe == "Week" else chart_df
+    export_source = period_full if st.session_state.timeframe in ("Week", "Day") else chart_df
     export_df = pd.DataFrame({
         "Timestamp": pd.to_datetime(export_source[ts_col]),
         "load": export_source["load_kWh"],
@@ -2659,6 +3642,19 @@ pv_sidebar_defaults = st.session_state.setdefault("pv_sidebar_defaults", {
     "init_soc": 20,
     "rt_eff": 90,
 })
+pending_finance_apply = st.session_state.pop("finance_apply_output", None)
+if pending_finance_apply:
+    if "pv_kwp" in pending_finance_apply:
+        pv_sidebar_defaults["pv_kwp"] = pending_finance_apply["pv_kwp"]
+        st.session_state["pv_kwp_input"] = pending_finance_apply["pv_kwp"]
+    if "ess_mwh" in pending_finance_apply:
+        ess_value = pending_finance_apply["ess_mwh"] or 0.0
+        pv_sidebar_defaults["batt_mwh"] = ess_value
+        st.session_state["batt_mwh_input"] = ess_value
+    finance_state = st.session_state.get("finance_inputs")
+    if finance_state and "pcs_kw" in pending_finance_apply:
+        finance_state["pcs_kw"] = pending_finance_apply["pcs_kw"]
+        st.session_state["pcs_kw_input"] = pending_finance_apply["pcs_kw"]
 st.session_state.setdefault("pv_data_source_selection", NASA_SOURCE)
 st.session_state.setdefault("pv_overview_data_mode", "Summary")
 nasa_defaults = st.session_state.setdefault("nasa_fetch", {
@@ -2786,6 +3782,61 @@ with st.sidebar:
         rt_eff_val = st.number_input("Round-trip Efficiency (%)", min_value=50, max_value=100, value=int(pv_sidebar_defaults["rt_eff"]), step=1, format="%d", key="rt_eff_input")
         pv_sidebar_defaults["rt_eff"] = rt_eff_val
         pv_inputs["rt_eff_pct"] = rt_eff_val
+        st.subheader("Energy Cost Pricing", help="Only works for Energy Cost Comparison View")
+        pricing_defaults = st.session_state.setdefault("pricing_inputs", {
+            "mode": "Peak / Off-Peak",
+            "detail": "Simple",
+            "flat_price": 1200.0,
+            "peak_price": 1500.0,
+            "offpeak_price": 1000.0,
+            "pv_discount": 15.0,
+            "ess_discount": 20.0,
+            "pv_price": 800.0,
+            "ess_price": 900.0,
+        })
+        pricing_mode = st.radio("Tariff Structure", ["Flat Price", "Peak / Off-Peak"],
+                                index=0 if pricing_defaults["mode"] == "Flat Price" else 1,
+                                key="pricing_sidebar_mode")
+        pricing_defaults["mode"] = pricing_mode
+        detail_mode = st.radio("Pricing Detail", ["Simple", "Advanced"],
+                               index=0 if pricing_defaults["detail"] == "Simple" else 1,
+                               key="pricing_sidebar_detail")
+        pricing_defaults["detail"] = detail_mode
+        if pricing_mode == "Flat Price":
+            flat_price = st.number_input("Flat Price (IDR/kWh)", min_value=0.0,
+                                          value=float(pricing_defaults["flat_price"]),
+                                          step=50.0, format="%0.0f", key="pricing_flat_price")
+            pricing_defaults["flat_price"] = flat_price
+            pricing_defaults["peak_price"] = flat_price
+            pricing_defaults["offpeak_price"] = flat_price
+        else:
+            peak_price = st.number_input("Peak Price (IDR/kWh)", min_value=0.0,
+                                          value=float(pricing_defaults["peak_price"]),
+                                          step=50.0, format="%0.0f", key="pricing_peak_price")
+            offpeak_price = st.number_input("Off-Peak Price (IDR/kWh)", min_value=0.0,
+                                             value=float(pricing_defaults["offpeak_price"]),
+                                             step=50.0, format="%0.0f", key="pricing_offpeak_price")
+            pricing_defaults["peak_price"] = peak_price
+            pricing_defaults["offpeak_price"] = offpeak_price
+        pv_discount = st.number_input("PV Discount (%)", min_value=0.0, max_value=100.0,
+                                      value=float(pricing_defaults["pv_discount"]),
+                                      step=1.0, format="%0.0f", key="pricing_pv_discount")
+        ess_discount = st.number_input("ESS Discount (%)", min_value=0.0, max_value=100.0,
+                                       value=float(pricing_defaults["ess_discount"]),
+                                       step=1.0, format="%0.0f", key="pricing_ess_discount")
+        pricing_defaults["pv_discount"] = pv_discount
+        pricing_defaults["ess_discount"] = ess_discount
+        if detail_mode == "Advanced":
+            pv_price = st.number_input("PV Direct Price (IDR/kWh)", min_value=0.0,
+                                       value=float(pricing_defaults["pv_price"]),
+                                       step=50.0, format="%0.0f", key="pricing_pv_price")
+            ess_price = st.number_input("ESS Price (IDR/kWh)", min_value=0.0,
+                                        value=float(pricing_defaults["ess_price"]),
+                                        step=50.0, format="%0.0f", key="pricing_ess_price")
+            pricing_defaults["pv_price"] = pv_price
+            pricing_defaults["ess_price"] = ess_price
+        st.session_state["pricing_inputs"] = pricing_defaults
+
     else:
         st.markdown('<div class="upload-title" style="margin-top:4px;">Load</div>', unsafe_allow_html=True)
         _small_download_link("Download Sample", _sample_detailed_excel(), "sample_detailed.xlsx", "sample_detail_dl")
