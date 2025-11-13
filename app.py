@@ -2109,7 +2109,9 @@ def render_energy_cost_section(cost_df: pd.DataFrame | None, ts_col: str):
                 mode="lines",
                 name="Grid Only",
                 line=dict(color=COLOR_CHART_BLACK, width=3),
-                hovertemplate=hover_tpl
+                hovertemplate=hover_tpl,
+                fill="tozeroy" if timeframe == "Week" else None,
+                fillcolor="rgba(0,0,0,1)" if timeframe == "Week" else None
             ))
             chart.add_trace(go.Scatter(
                 x=data[ts_col],
@@ -2117,28 +2119,70 @@ def render_energy_cost_section(cost_df: pd.DataFrame | None, ts_col: str):
                 mode="lines",
                 name="PV + ESS",
                 line=dict(color=COLOR_PV, width=3),
-                hovertemplate=hover_tpl
+                hovertemplate=hover_tpl,
+                fill="tozeroy" if timeframe == "Week" else None,
+                fillcolor="rgba(40, 167, 69, 1)" if timeframe == "Week" else None
             ))
         elif timeframe == "Month":
-            data["_day"] = pd.to_datetime(data[ts_col]).dt.floor("D")
-            grouped = data.groupby("_day")[["grid_cost", "pv_ess_cost"]].sum().reset_index()
+            grouped = series_df.copy()
+            grouped["_day"] = pd.to_datetime(grouped[ts_col]).dt.floor("D")
+            grouped = grouped.groupby("_day")[["grid_cost", "pv_ess_cost"]].sum().reset_index()
             if cumulative:
                 grouped["grid_cost"] = grouped["grid_cost"].cumsum()
                 grouped["pv_ess_cost"] = grouped["pv_ess_cost"].cumsum()
-            labels = grouped["_day"].dt.strftime("%d %b (%a)")
-            add_bar_trace(labels, grouped["grid_cost"], "Grid Only", COLOR_CHART_BLACK)
-            add_bar_trace(labels, grouped["pv_ess_cost"], "PV + ESS", COLOR_PV)
+            labels = grouped["_day"]
+            if cumulative:
+                chart.add_trace(go.Scatter(
+                    x=labels,
+                    y=grouped["grid_cost"],
+                    mode="lines",
+                    name="Grid Only",
+                    line=dict(color=COLOR_CHART_BLACK, width=2),
+                    hovertemplate="IDR %{y:,.0f}<br>%{x|%d %b %Y}<extra></extra>"
+                ))
+                chart.add_trace(go.Scatter(
+                    x=labels,
+                    y=grouped["pv_ess_cost"],
+                    mode="lines",
+                    name="PV + ESS",
+                    line=dict(color=COLOR_PV, width=2),
+                    hovertemplate="IDR %{y:,.0f}<br>%{x|%d %b %Y}<extra></extra>"
+                ))
+            else:
+                labels_fmt = labels.dt.strftime("%d %b (%a)")
+                add_bar_trace(labels_fmt, grouped["grid_cost"], "Grid Only", COLOR_CHART_BLACK)
+                add_bar_trace(labels_fmt, grouped["pv_ess_cost"], "PV + ESS", COLOR_PV)
         else:  # Year
-            data["_month"] = pd.to_datetime(data[ts_col]).dt.to_period("M").dt.to_timestamp()
-            grouped = data.groupby("_month")[["grid_cost", "pv_ess_cost"]].sum().reset_index()
+            grouped = series_df.copy()
+            grouped["_month"] = pd.to_datetime(grouped[ts_col]).dt.to_period("M").dt.to_timestamp()
+            grouped = grouped.groupby("_month")[["grid_cost", "pv_ess_cost"]].sum().reset_index()
             if cumulative:
                 grouped["grid_cost"] = grouped["grid_cost"].cumsum()
                 grouped["pv_ess_cost"] = grouped["pv_ess_cost"].cumsum()
-            labels = grouped["_month"].dt.strftime("%b %Y")
-            add_bar_trace(labels, grouped["grid_cost"], "Grid Only", COLOR_CHART_BLACK)
-            add_bar_trace(labels, grouped["pv_ess_cost"], "PV + ESS", COLOR_PV)
+            labels = grouped["_month"]
+            if cumulative:
+                chart.add_trace(go.Scatter(
+                    x=labels,
+                    y=grouped["grid_cost"],
+                    mode="lines",
+                    name="Grid Only",
+                    line=dict(color=COLOR_CHART_BLACK, width=2),
+                    hovertemplate="IDR %{y:,.0f}<br>%{x|%b %Y}<extra></extra>"
+                ))
+                chart.add_trace(go.Scatter(
+                    x=labels,
+                    y=grouped["pv_ess_cost"],
+                    mode="lines",
+                    name="PV + ESS",
+                    line=dict(color=COLOR_PV, width=2),
+                    hovertemplate="IDR %{y:,.0f}<br>%{x|%b %Y}<extra></extra>"
+                ))
+            else:
+                labels_fmt = labels.dt.strftime("%b %Y")
+                add_bar_trace(labels_fmt, grouped["grid_cost"], "Grid Only", COLOR_CHART_BLACK)
+                add_bar_trace(labels_fmt, grouped["pv_ess_cost"], "PV + ESS", COLOR_PV)
 
-        barmode = "overlay" if timeframe in ("Month", "Year") else None
+        barmode = "overlay" if (timeframe in ("Month", "Year") and not cumulative) else None
         chart.update_layout(
             height=BASE_HEIGHT * 2,
             margin=dict(l=0, r=10, t=30, b=30),
@@ -3183,6 +3227,26 @@ def run_pv_mode(load_file, harvest_file, data_source, pv_inputs):
         render_energy_cost_section(cost_df, ts_col)
         return
 
+    spill_col, spill_summary_col = st.columns([4, 1], gap="large")
+    with spill_col:
+        spill_fig = spill_bar_figure(chart_df, ts_col, ymax_from_energy=ymax,
+                                     timeframe=st.session_state.timeframe)
+        st.plotly_chart(spill_fig, use_container_width=True, config={"displayModeBar": False})
+    with spill_summary_col:
+        render_spill_summary(st, period_full)
+
+    if st.session_state.timeframe in ("Week", "Day"):
+        soc_col, soc_info = st.columns([4, 1], gap="large")
+        with soc_col:
+            soc_fig = soc_bar_figure(period_full, ts_col,
+                                     soc_min=int(pv_inputs["soc_min_pct"]),
+                                     soc_max=int(pv_inputs["soc_max_pct"]))
+            st.plotly_chart(soc_fig, use_container_width=True, config={"displayModeBar": False})
+        with soc_info:
+            st.empty()
+    else:
+        st.markdown(" ")
+
     if st.session_state.timeframe == "Month":
         day_ts = pd.to_datetime(chart_df[ts_col]).reset_index(drop=True)
         if capacity > 0:
@@ -3348,24 +3412,6 @@ def run_pv_mode(load_file, harvest_file, data_source, pv_inputs):
                     """,
                     unsafe_allow_html=True
                 )
-
-    if st.session_state.timeframe in ("Week", "Day"):
-        left2, right2 = st.columns([4, 1], gap="large")
-        with left2:
-            soc_fig = soc_bar_figure(period_full, ts_col, soc_min=int(pv_inputs["soc_min_pct"]), soc_max=int(pv_inputs["soc_max_pct"]))
-            st.plotly_chart(soc_fig, use_container_width=True, config={"displayModeBar": False})
-        with right2:
-            st.empty()
-    else:
-        st.markdown(" ")
-
-    left3, right3 = st.columns([4, 1], gap="large")
-    with left3:
-        spill_fig = spill_bar_figure(chart_df, ts_col, ymax_from_energy=ymax,
-                                     timeframe=st.session_state.timeframe)
-        st.plotly_chart(spill_fig, use_container_width=True, config={"displayModeBar": False})
-    with right3:
-        render_spill_summary(st, period_full)
 
     st.subheader("Export Data")
     export_source = period_full if st.session_state.timeframe in ("Week", "Day") else chart_df
