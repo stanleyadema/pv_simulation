@@ -2050,9 +2050,9 @@ def render_energy_cost_section(cost_df: pd.DataFrame | None, ts_col: str):
     savings_pct = (savings / grid_cost * 100) if grid_cost > 0 else 0.0
 
     with summary_box:
-        st.metric("Savings", f"IDR {_fmt_comma(savings, 0)}", f"{savings_pct:.1f}%")
-        st.metric("PV + ESS Cost", f"IDR {_fmt_comma(pv_cost, 0)}")
-        st.metric("Grid Only Cost", f"IDR {_fmt_comma(grid_cost, 0)}")
+        st.metric("Savings", f"IDR {_fmt_compact(savings)}", f"{savings_pct:.1f}%")
+        st.metric("PV + ESS Cost", f"IDR {_fmt_compact(pv_cost)}")
+        st.metric("Grid Only Cost", f"IDR {_fmt_compact(grid_cost)}")
 
     is_week = (st.session_state.timeframe == "Week")
     timeframe = st.session_state.timeframe
@@ -2110,8 +2110,8 @@ def render_energy_cost_section(cost_df: pd.DataFrame | None, ts_col: str):
                 name="Grid Only",
                 line=dict(color=COLOR_CHART_BLACK, width=3),
                 hovertemplate=hover_tpl,
-                fill="tozeroy" if timeframe == "Week" else None,
-                fillcolor="rgba(0,0,0,1)" if timeframe == "Week" else None
+                fill="tozeroy" if timeframe in ("Day", "Week") else None,
+                fillcolor="rgba(0,0,0,1)" if timeframe in ("Day", "Week") else None
             ))
             chart.add_trace(go.Scatter(
                 x=data[ts_col],
@@ -2120,8 +2120,8 @@ def render_energy_cost_section(cost_df: pd.DataFrame | None, ts_col: str):
                 name="PV + ESS",
                 line=dict(color=COLOR_PV, width=3),
                 hovertemplate=hover_tpl,
-                fill="tozeroy" if timeframe == "Week" else None,
-                fillcolor="rgba(40, 167, 69, 1)" if timeframe == "Week" else None
+                fill="tozeroy" if timeframe in ("Day", "Week") else None,
+                fillcolor="rgba(40, 167, 69, 1)" if timeframe in ("Day", "Week") else None
             ))
         elif timeframe == "Month":
             grouped = series_df.copy()
@@ -2130,28 +2130,26 @@ def render_energy_cost_section(cost_df: pd.DataFrame | None, ts_col: str):
             if cumulative:
                 grouped["grid_cost"] = grouped["grid_cost"].cumsum()
                 grouped["pv_ess_cost"] = grouped["pv_ess_cost"].cumsum()
-            labels = grouped["_day"]
-            if cumulative:
-                chart.add_trace(go.Scatter(
-                    x=labels,
-                    y=grouped["grid_cost"],
-                    mode="lines",
-                    name="Grid Only",
-                    line=dict(color=COLOR_CHART_BLACK, width=2),
-                    hovertemplate="IDR %{y:,.0f}<br>%{x|%d %b %Y}<extra></extra>"
-                ))
-                chart.add_trace(go.Scatter(
-                    x=labels,
-                    y=grouped["pv_ess_cost"],
-                    mode="lines",
-                    name="PV + ESS",
-                    line=dict(color=COLOR_PV, width=2),
-                    hovertemplate="IDR %{y:,.0f}<br>%{x|%d %b %Y}<extra></extra>"
-                ))
-            else:
-                labels_fmt = labels.dt.strftime("%d %b (%a)")
-                add_bar_trace(labels_fmt, grouped["grid_cost"], "Grid Only", COLOR_CHART_BLACK)
-                add_bar_trace(labels_fmt, grouped["pv_ess_cost"], "PV + ESS", COLOR_PV)
+            chart.add_trace(go.Scatter(
+                x=grouped["_day"],
+                y=grouped["grid_cost"],
+                mode="lines",
+                name="Grid Only",
+                line=dict(color=COLOR_CHART_BLACK, width=2),
+                hovertemplate="IDR %{y:,.0f}<br>%{x|%d %b %Y}<extra></extra>",
+                fill="tozeroy",
+                fillcolor="rgba(0,0,0,1)"
+            ))
+            chart.add_trace(go.Scatter(
+                x=grouped["_day"],
+                y=grouped["pv_ess_cost"],
+                mode="lines",
+                name="PV + ESS",
+                line=dict(color=COLOR_PV, width=2),
+                hovertemplate="IDR %{y:,.0f}<br>%{x|%d %b %Y}<extra></extra>",
+                fill="tozeroy",
+                fillcolor="rgba(40, 167, 69, 1)"
+            ))
         else:  # Year
             grouped = series_df.copy()
             grouped["_month"] = pd.to_datetime(grouped[ts_col]).dt.to_period("M").dt.to_timestamp()
@@ -2159,37 +2157,33 @@ def render_energy_cost_section(cost_df: pd.DataFrame | None, ts_col: str):
             if cumulative:
                 grouped["grid_cost"] = grouped["grid_cost"].cumsum()
                 grouped["pv_ess_cost"] = grouped["pv_ess_cost"].cumsum()
-            labels = grouped["_month"]
-            if cumulative:
-                chart.add_trace(go.Scatter(
-                    x=labels,
-                    y=grouped["grid_cost"],
-                    mode="lines",
-                    name="Grid Only",
-                    line=dict(color=COLOR_CHART_BLACK, width=2),
-                    hovertemplate="IDR %{y:,.0f}<br>%{x|%b %Y}<extra></extra>"
-                ))
-                chart.add_trace(go.Scatter(
-                    x=labels,
-                    y=grouped["pv_ess_cost"],
-                    mode="lines",
-                    name="PV + ESS",
-                    line=dict(color=COLOR_PV, width=2),
-                    hovertemplate="IDR %{y:,.0f}<br>%{x|%b %Y}<extra></extra>"
-                ))
-            else:
-                labels_fmt = labels.dt.strftime("%b %Y")
-                add_bar_trace(labels_fmt, grouped["grid_cost"], "Grid Only", COLOR_CHART_BLACK)
-                add_bar_trace(labels_fmt, grouped["pv_ess_cost"], "PV + ESS", COLOR_PV)
+            chart.add_trace(go.Scatter(
+                x=grouped["_month"],
+                y=grouped["grid_cost"],
+                mode="lines",
+                name="Grid Only",
+                line=dict(color=COLOR_CHART_BLACK, width=2),
+                hovertemplate="IDR %{y:,.0f}<br>%{x|%b %Y}<extra></extra>",
+                fill="tozeroy",
+                fillcolor="rgba(0,0,0,1)"
+            ))
+            chart.add_trace(go.Scatter(
+                x=grouped["_month"],
+                y=grouped["pv_ess_cost"],
+                mode="lines",
+                name="PV + ESS",
+                line=dict(color=COLOR_PV, width=2),
+                hovertemplate="IDR %{y:,.0f}<br>%{x|%b %Y}<extra></extra>",
+                fill="tozeroy",
+                fillcolor="rgba(40, 167, 69, 1)"
+            ))
 
-        barmode = "overlay" if (timeframe in ("Month", "Year") and not cumulative) else None
         chart.update_layout(
             height=BASE_HEIGHT * 2,
             margin=dict(l=0, r=10, t=30, b=30),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
             yaxis=dict(showticklabels=False, title=None),
             xaxis=dict(showticklabels=False),
-            barmode=barmode,
         )
         chart.update_yaxes(showgrid=True, gridcolor="#eee")
         return chart
@@ -2213,7 +2207,33 @@ def _fmt_comma(val: float, decimals: int = 0, unit: str = "") -> str:
     if val is None or np.isnan(val):
         return "-"
     fmt = f"{{:,.{decimals}f}}"
-    return fmt.format(val) + unit
+    return fmt.format(val).rstrip('0').rstrip('.') + unit
+
+
+def _fmt_compact(val: float | None) -> str:
+    if val is None or not np.isfinite(val):
+        return "-"
+    abs_val = abs(val)
+    sign = "-" if val < 0 else ""
+    if abs_val >= 1_000_000_000:
+        scaled = abs_val / 1_000_000_000
+        digits = len(str(int(scaled))) if scaled >= 1 else 0
+        decimals = max(0, 3 - digits)
+        fmt = f"{{:.{decimals}f}}"
+        return f"{sign}{fmt.format(scaled)} B".replace(".00", "")
+    if abs_val >= 1_000_000:
+        scaled = abs_val / 1_000_000
+        digits = len(str(int(scaled))) if scaled >= 1 else 0
+        decimals = max(0, 3 - digits)
+        fmt = f"{{:.{decimals}f}}"
+        return f"{sign}{fmt.format(scaled)} M".replace(".00", "")
+    if abs_val >= 1_000:
+        scaled = abs_val / 1_000
+        digits = len(str(int(scaled))) if scaled >= 1 else 0
+        decimals = max(0, 3 - digits)
+        fmt = f"{{:.{decimals}f}}"
+        return f"{sign}{fmt.format(scaled)} K".replace(".00", "")
+    return f"{sign}{abs_val:,.0f}"
 
 
 def _fmt_percent(val: float) -> str:
